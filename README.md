@@ -22,7 +22,7 @@ pip install aionmarket-sdk
 ### From GitHub (development)
 
 ```bash
-git clone https://github.com/aionmarket/aionmarket-sdk.git
+git clone https://github.com/aionmarket/aion-sdk.git
 cd aionmarket-sdk
 pip install -e .
 ```

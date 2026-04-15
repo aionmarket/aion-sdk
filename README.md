@@ -1,0 +1,244 @@
+# AION Market SDK (MVP)
+
+Python SDK for AI Agent trading operations on Polymarket prediction markets.
+
+## Features
+
+- 🤖 **Agent Management** - Register, authenticate, and manage AI agents
+- 📊 **Market Operations** - Search markets, get prices, access briefings and context
+- 💳 **Wallet Management** - Register and verify Polymarket CLOB credentials
+- 💹 **Trading** - Execute trades, manage orders, claim rewards
+- 🔐 **Type-Safe** - Full type hints with Python 3.9+ support
+- 📦 **Lightweight** - Minimal dependencies (only requests)
+
+## Installation
+
+### From PyPI (recommended)
+
+```bash
+pip install aionmarket-sdk
+```
+
+### From GitHub (development)
+
+```bash
+git clone https://github.com/aionmarket/aionmarket-sdk.git
+cd aionmarket-sdk
+pip install -e .
+```
+
+### For Development
+
+```bash
+pip install -e ".[dev]"
+```
+
+## Quick Start
+
+### Basic Usage
+
+```python
+from aionmarket_sdk import AionMarketClient
+
+# Initialize client
+client = AionMarketClient()
+
+# Register a new agent
+registration = client.register_agent("my-trading-bot")
+print(f"Agent API Key: {registration['apiKeyCode']}")
+
+# Use authenticated client
+api_key = registration['apiKeyCode']
+client_auth = AionMarketClient(api_key=api_key)
+
+# Get agent info
+agent_info = client_auth.get_me()
+print(f"Agent: {agent_info}")
+```
+
+### Trading Example
+
+```python
+from aionmarket_sdk import AionMarketClient
+
+client = AionMarketClient(api_key="your-api-key")
+
+# Search for markets
+markets = client.get_markets(q="bitcoin", limit=5)
+print(f"Found {len(markets)} markets")
+
+# Get market context before trading
+if markets:
+    market_id = markets[0]['id']
+    context = client.get_market_context(market_id, user="0x...")
+    print(f"Market: {context['name']}")
+    print(f"Your position: {context['myPosition']}")
+    print(f"Suggested risk limit: {context['riskLimit']}")
+
+# Place a trade
+result = client.trade({
+    "marketId": market_id,
+    "clobTokenId": "0x...",
+    "side": "BUY",
+    "amount": 100,
+    "price": 0.65,
+    "orderType": "LIMIT"
+})
+print(f"Order placed: {result['orderId']}")
+
+# Get open orders
+open_orders = client.get_open_orders()
+print(f"Open orders: {len(open_orders)}")
+
+# Cancel an order
+cancel_result = client.cancel_order(order_id=result['orderId'])
+print(f"Cancelled: {cancel_result['success']}")
+```
+
+### Wallet Credentials
+
+```python
+from aionmarket_sdk import AionMarketClient
+
+client = AionMarketClient(api_key="your-api-key")
+
+# Check if credentials are registered
+wallet = "0x1234..."
+check = client.check_wallet_credentials(wallet)
+if not check['hasCredentials']:
+    # Register credentials
+    result = client.register_wallet_credentials(
+        wallet_address=wallet,
+        api_key="polymarket-api-key",
+        api_secret="polymarket-api-secret",
+        api_passphrase="polymarket-passphrase"
+    )
+    print(f"Credentials registered: {result['success']}")
+```
+
+## Configuration
+
+### Base URL
+
+The client defaults to the test environment. For production, set the base URL:
+
+```python
+client = AionMarketClient(
+    api_key="your-api-key",
+    base_url="https://pm-t1.bxingupdate.com/bvapi"
+)
+```
+
+### Timeout
+
+Customize request timeout (default 20 seconds):
+
+```python
+client = AionMarketClient(api_key="your-api-key", timeout=30)
+```
+
+## Supported Endpoints
+
+### Agent Management
+
+- `register_agent()` - Register new agent
+- `get_me()` - Get current agent info
+- `get_settings()` / `update_settings()` - Risk control settings
+- `get_skills()` - Available agent skills
+
+### Market Data
+
+- `get_markets()` - Search markets
+- `get_market()` - Get market details by ID
+- `check_market_exists()` - Verify market exists
+- `get_prices_history()` - Historical price data
+- `get_briefing()` - Agent briefing with alerts and recommendations
+- `get_market_context()` - Pre-trade market assessment
+
+### Wallet Management
+
+- `check_wallet_credentials()` - Verify registered credentials
+- `register_wallet_credentials()` - Register Polymarket CLOB credentials
+
+### Trading Operations
+
+- `trade()` - Execute market order
+- `get_open_orders()` - List pending orders
+- `get_order_history()` - Order history with filters
+- `get_order_detail()` - Specific order details
+- `cancel_order()` - Cancel single order
+- `cancel_all_orders()` - Cancel all orders
+- `redeem()` - Claim market settlement rewards
+
+## Error Handling
+
+```python
+from aionmarket_sdk import AionMarketClient, ApiError
+
+client = AionMarketClient(api_key="your-api-key")
+
+try:
+    result = client.get_me()
+except ApiError as e:
+    print(f"API Error: {e.message}")
+    print(f"Status Code: {e.status_code}")
+    print(f"Error Code: {e.code}")
+```
+
+## Project Structure
+
+```
+aionmarket-sdk/
+├── src/
+│   └── aionmarket_sdk/
+│       ├── __init__.py        # Package exports
+│       └── client.py          # Main API client
+├── tests/                     # Test suite
+├── pyproject.toml             # Project metadata and dependencies
+├── README.md                  # This file
+└── LICENSE                    # MIT License
+```
+
+## Development
+
+### Setup Development Environment
+
+```bash
+git clone https://github.com/aionmarket/aionmarket-sdk.git
+cd aionmarket-sdk
+pip install -e ".[dev]"
+```
+
+### Run Tests
+
+```bash
+pytest
+pytest --cov              # with coverage
+```
+
+### Code Quality
+
+```bash
+black src/                # format code
+isort src/                # sort imports
+mypy src/                 # type checking
+flake8 src/               # linting
+```
+
+## Documentation
+
+For detailed API documentation, visit: https://docs.aionmarket.com
+
+## Support
+
+- 📧 Email: support@aionmarket.com
+- 🐛 Issues: https://github.com/aionmarket/aionmarket-sdk/issues
+- 💬 Discussions: https://github.com/aionmarket/aionmarket-sdk
+
+## License
+
+MIT License - see LICENSE file for details
+
+## Contributing
+
+Contributions are welcome! Please submit issues and pull requests via GitHub.

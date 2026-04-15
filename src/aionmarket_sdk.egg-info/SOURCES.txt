@@ -1,0 +1,10 @@
+LICENSE
+README.md
+pyproject.toml
+src/aionmarket_sdk/__init__.py
+src/aionmarket_sdk/client.py
+src/aionmarket_sdk.egg-info/PKG-INFO
+src/aionmarket_sdk.egg-info/SOURCES.txt
+src/aionmarket_sdk.egg-info/dependency_links.txt
+src/aionmarket_sdk.egg-info/requires.txt
+src/aionmarket_sdk.egg-info/top_level.txt

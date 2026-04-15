@@ -12,7 +12,7 @@ from urllib import error, parse, request
 
 # Production base URL — never changes between releases.
 # Override via AIONMARKET_BASE_URL env var or explicit base_url parameter.
-_PRODUCTION_URL = "https://api.aionmarket.com/bvapi"
+_PRODUCTION_URL = "https://api.aionmarket.com/api"
 
 
 @dataclass
@@ -53,11 +53,11 @@ class AionMarketClient:
         Base URL resolution priority (highest to lowest):
           1. Explicit ``base_url`` parameter
           2. ``AIONMARKET_BASE_URL`` environment variable
-          3. Production URL (https://api.aionmarket.com/bvapi)
+          3. Production URL (https://api.aionmarket.com/api)
 
         For sandbox / staging use, set the environment variable instead of
         modifying code:
-            export AIONMARKET_BASE_URL="https://pm-t1.bxingupdate.com/bvapi"
+            export AIONMARKET_BASE_URL="https://api.aionmarket.com/api"
 
         Args:
             api_key: API key for authentication. Falls back to

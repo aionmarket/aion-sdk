@@ -125,7 +125,7 @@ The client defaults to the test environment. For production, set the base URL:
 ```python
 client = AionMarketClient(
     api_key="your-api-key",
-    base_url="https://pm-t1.bxingupdate.com/bvapi"
+    base_url="https://api.aionmarket.com/api"
 )
 ```
 

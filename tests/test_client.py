@@ -151,3 +151,183 @@ def test_trade_payload_validation_catches_missing_nested_order_fields() -> None:
         )
 
     assert "trade.order missing required fields" in str(exc.value)
+
+
+def test_trade_normalizes_side_from_enum_like_value_and_signature_type() -> None:
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+
+    class _EnumLike:
+        value = "buy"
+
+    payload = {
+        "marketConditionId": "0x1",
+        "marketQuestion": "q",
+        "orderSize": 1,
+        "price": 0.5,
+        "outcome": "YES",
+        "order": {
+            "maker": "0x1",
+            "signer": "0x1",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tokenId": "1",
+            "makerAmount": "1",
+            "takerAmount": "1",
+            "side": _EnumLike(),
+            "expiration": "0",
+            "nonce": "0",
+            "feeRateBps": "0",
+            "signature": "0xabc",
+            "salt": 1,
+            "signatureType": "0",
+        },
+    }
+
+    def _assert_payload(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["order"]["side"] == "BUY"
+        assert body["order"]["signatureType"] == 0
+        return _MockResponse({"success": True, "orderId": "oid"})
+
+    with patch("urllib.request.urlopen", side_effect=_assert_payload):
+        out = client.trade(payload)
+
+    assert out["success"] is True
+
+
+def test_trade_rejects_invalid_side_before_request() -> None:
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+
+    with pytest.raises(ValueError) as exc:
+        client.trade(
+            {
+                "marketConditionId": "0x1",
+                "marketQuestion": "q",
+                "orderSize": 1,
+                "price": 0.5,
+                "outcome": "YES",
+                "order": {
+                    "maker": "0x1",
+                    "signer": "0x1",
+                    "taker": "0x0000000000000000000000000000000000000000",
+                    "tokenId": "1",
+                    "makerAmount": "1",
+                    "takerAmount": "1",
+                    "side": "hold",
+                    "expiration": "0",
+                    "nonce": "0",
+                    "feeRateBps": "0",
+                    "signature": "0xabc",
+                    "salt": 1,
+                    "signatureType": 0,
+                },
+            }
+        )
+
+    assert "trade.order.side must be BUY or SELL" in str(exc.value)
+
+
+def test_trade_normalizes_order_type_to_uppercase() -> None:
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+    payload = {
+        "marketConditionId": "0x1",
+        "marketQuestion": "q",
+        "orderSize": 1,
+        "price": 0.5,
+        "outcome": "YES",
+        "orderType": "fak",
+        "order": {
+            "maker": "0x1",
+            "signer": "0x1",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tokenId": "1",
+            "makerAmount": "1",
+            "takerAmount": "1",
+            "side": "BUY",
+            "expiration": "0",
+            "nonce": "0",
+            "feeRateBps": "0",
+            "signature": "0xabc",
+            "salt": 1,
+            "signatureType": 0,
+        },
+    }
+
+    def _assert_payload(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["orderType"] == "FAK"
+        return _MockResponse({"success": True, "orderId": "oid"})
+
+    with patch("urllib.request.urlopen", side_effect=_assert_payload):
+        out = client.trade(payload)
+
+    assert out["success"] is True
+
+
+def test_trade_sets_default_order_type_from_is_limit_order() -> None:
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+    payload = {
+        "marketConditionId": "0x1",
+        "marketQuestion": "q",
+        "orderSize": 1,
+        "price": 0.5,
+        "outcome": "YES",
+        "isLimitOrder": False,
+        "order": {
+            "maker": "0x1",
+            "signer": "0x1",
+            "taker": "0x0000000000000000000000000000000000000000",
+            "tokenId": "1",
+            "makerAmount": "1",
+            "takerAmount": "1",
+            "side": "BUY",
+            "expiration": "0",
+            "nonce": "0",
+            "feeRateBps": "0",
+            "signature": "0xabc",
+            "salt": 1,
+            "signatureType": 0,
+        },
+    }
+
+    def _assert_payload(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["orderType"] == "FAK"
+        return _MockResponse({"success": True, "orderId": "oid"})
+
+    with patch("urllib.request.urlopen", side_effect=_assert_payload):
+        out = client.trade(payload)
+
+    assert out["success"] is True
+
+
+def test_trade_rejects_invalid_order_type_before_request() -> None:
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+
+    with pytest.raises(ValueError) as exc:
+        client.trade(
+            {
+                "marketConditionId": "0x1",
+                "marketQuestion": "q",
+                "orderSize": 1,
+                "price": 0.5,
+                "outcome": "YES",
+                "orderType": "IOC",
+                "order": {
+                    "maker": "0x1",
+                    "signer": "0x1",
+                    "taker": "0x0000000000000000000000000000000000000000",
+                    "tokenId": "1",
+                    "makerAmount": "1",
+                    "takerAmount": "1",
+                    "side": "BUY",
+                    "expiration": "0",
+                    "nonce": "0",
+                    "feeRateBps": "0",
+                    "signature": "0xabc",
+                    "salt": 1,
+                    "signatureType": 0,
+                },
+            }
+        )
+
+    assert "trade.orderType must be one of: GTC, FOK, GTD, FAK" in str(exc.value)

@@ -6,6 +6,7 @@ from __future__ import annotations
 
 import json as jsonlib
 import os
+from copy import deepcopy
 from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib import error, parse, request
@@ -109,6 +110,55 @@ class AionMarketClient:
                 ]
             else:
                 normalized[key] = value
+        return normalized
+
+    def _normalize_trade_side_value(self, side: Any) -> str:
+        """Normalize trade side into strict BUY/SELL expected by backend DTO."""
+        candidate = side
+        if hasattr(candidate, "value"):
+            candidate = getattr(candidate, "value")
+
+        if isinstance(candidate, bytes):
+            candidate = candidate.decode("utf-8", errors="ignore")
+
+        if not isinstance(candidate, str):
+            raise ValueError("trade.order.side must be a string compatible with BUY/SELL")
+
+        normalized = candidate.strip().upper()
+        if "." in normalized:
+            normalized = normalized.split(".")[-1]
+
+        if normalized not in {"BUY", "SELL"}:
+            raise ValueError("trade.order.side must be BUY or SELL")
+
+        return normalized
+
+    def _normalize_trade_payload(self, payload: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize payload values so SDK callers can pass lightweight enum/object types."""
+        normalized = deepcopy(payload)
+        order_payload = normalized.get("order")
+        if not isinstance(order_payload, dict):
+            raise ValueError("trade payload field 'order' must be a dict")
+
+        order_payload["side"] = self._normalize_trade_side_value(order_payload.get("side"))
+
+        if "signatureType" in order_payload and order_payload["signatureType"] is not None:
+            try:
+                order_payload["signatureType"] = int(order_payload["signatureType"])
+            except (TypeError, ValueError) as exc:
+                raise ValueError("trade.order.signatureType must be an integer") from exc
+
+        raw_order_type = normalized.get("orderType")
+        if raw_order_type is None or str(raw_order_type).strip() == "":
+            normalized["orderType"] = (
+                "FAK" if normalized.get("isLimitOrder") is False else "GTC"
+            )
+        else:
+            normalized_order_type = str(raw_order_type).strip().upper()
+            if normalized_order_type not in {"GTC", "FOK", "GTD", "FAK"}:
+                raise ValueError("trade.orderType must be one of: GTC, FOK, GTD, FAK")
+            normalized["orderType"] = normalized_order_type
+
         return normalized
 
     def _request(
@@ -633,7 +683,8 @@ class AionMarketClient:
                 + ", ".join(sorted(missing_order))
             )
 
-        return self._request("POST", "/markets/trade", json=payload)
+        normalized_payload = self._normalize_trade_payload(payload)
+        return self._request("POST", "/markets/trade", json=normalized_payload)
 
     def get_open_orders(
         self,

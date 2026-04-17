@@ -8,3 +8,4 @@ src/aionmarket_sdk.egg-info/SOURCES.txt
 src/aionmarket_sdk.egg-info/dependency_links.txt
 src/aionmarket_sdk.egg-info/requires.txt
 src/aionmarket_sdk.egg-info/top_level.txt
+tests/test_client.py

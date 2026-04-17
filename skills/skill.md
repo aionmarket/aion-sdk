@@ -7,7 +7,7 @@ description: >
 metadata:
   author: "AION Market"
   version: "0.1.0"
-  homepage: "https://www.aionmarket.com"
+  homepage: "https://aionmarket.com"
   docs: "https://docs.aionmarket.com"
 ---
 
@@ -15,7 +15,7 @@ metadata:
 
 The best prediction market interface for AI agents. Trade on Polymarket through one API, with agent safety rails, risk controls, and pre-trade context.
 
-**Base URL:** `https://pm-t1.bxingupdate.com/bvapi`
+**Base URL:** `https://api.aionmarket.com/bvapi`
 **API Docs:** https://docs.aionmarket.com
 
 ## What is AionMarket?
@@ -98,12 +98,31 @@ if context.get("warnings"):
 
 # Trade only if you have a thesis
 result = client.trade({
-    "marketId": market_id,
-    "clobTokenId": context["clobTokenId"],
-    "side": "BUY",
-    "amount": 10,
+    "venue": "polymarket",
+    "isLimitOrder": True,
+    "marketConditionId": "0x...",
+    "marketQuestion": "Will BTC close above 80k on Friday?",
+    "orderSize": 10,
     "price": 0.55,
-    "orderType": "LIMIT"
+    "outcome": "YES",
+    "reasoning": "Model edge is positive and liquidity is sufficient",
+    "source": "sdk:my-strategy",
+    "skillSlug": "my-strategy",
+    "order": {
+        "maker": "0x...",
+        "signer": "0x...",
+        "taker": "0x0000000000000000000000000000000000000000",
+        "tokenId": "69136365945621600854789649488423522395843457249417452310260493085275775221076",
+        "makerAmount": "5500000",
+        "takerAmount": "10000000",
+        "side": "BUY",
+        "expiration": "0",
+        "nonce": "0",
+        "feeRateBps": "0",
+        "signature": "0x...",
+        "salt": 599228746038,
+        "signatureType": 0,
+    },
 })
 print(f"Order placed: {result['orderId']}")
 ```
@@ -121,7 +140,7 @@ print(f"Order placed: {result['orderId']}")
 
 1. Explicit `base_url` parameter in code
 2. `AIONMARKET_BASE_URL` environment variable
-3. Production default: `https://pm-t1.bxingupdate.com/bvapi`
+3. Production default: `https://api.aionmarket.com/bvapi`
 
 ---
 
@@ -195,6 +214,10 @@ client.cancel_all_orders()
 open_orders = client.get_open_orders()
 history = client.get_order_history(limit=20)
 
+# Positions
+closed_positions = client.get_closed_positions(user="0x...")
+current_positions = client.get_current_positions(user="0x...")
+
 # Redeem settled positions
 client.redeem(market_id="...", side="YES")
 ```
@@ -208,18 +231,31 @@ from aionmarket_sdk import AionMarketClient, ApiError
 
 client = AionMarketClient()
 
-try:
-    result = client.get_me()
-except ApiError as e:
-    if e.status_code == 401:
-        print("Invalid API key")
-    elif e.status_code == 403:
-        print("Agent not authorized")
-    else:
-        print(f"API Error {e.code}: {e.message}")
+# Let exception bubble up, and consume raw backend payload where needed.
+result = client.get_me()
 ```
 
-All error responses include a `message` field with actionable detail.
+If you need to inspect backend details for diagnostics:
+
+```python
+from aionmarket_sdk import AionMarketClient, ApiError
+
+client = AionMarketClient()
+
+try:
+    client.trade({...})
+except ApiError as e:
+    # Raw backend body is preserved, including fields like detail/fix/hint.
+    print(e.response_body)
+    raise
+```
+
+For full passthrough access, use:
+
+```python
+raw = client.request("GET", "/markets/orders/open", params={"venue": "polymarket"})
+print(raw)
+```
 
 ---
 

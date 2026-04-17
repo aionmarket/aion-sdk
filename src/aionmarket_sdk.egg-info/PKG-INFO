@@ -1,13 +1,13 @@
 Metadata-Version: 2.4
 Name: aionmarket-sdk
-Version: 0.1.1
+Version: 0.1.2
 Summary: Python SDK for AI Agent trading on prediction markets (Polymarket MVP)
 Author-email: AION Market <support@aionmarket.com>
 License-Expression: MIT
-Project-URL: Homepage, https://github.com/aionmarket/aionmarket-sdk
-Project-URL: Repository, https://github.com/aionmarket/aionmarket-sdk
+Project-URL: Homepage, https://github.com/aionmarket/aion-sdk
+Project-URL: Repository, https://github.com/aionmarket/aion-sdk
 Project-URL: Documentation, https://docs.aionmarket.com
-Project-URL: Issues, https://github.com/aionmarket/aionmarket-sdk/issues
+Project-URL: Issues, https://github.com/aionmarket/aion-sdk/issues
 Keywords: polymarket,prediction-markets,trading,ai-agent,sdk
 Classifier: Development Status :: 3 - Alpha
 Classifier: Intended Audience :: Developers
@@ -110,12 +110,31 @@ if markets:
 
 # Place a trade
 result = client.trade({
-    "marketId": market_id,
-    "clobTokenId": "0x...",
-    "side": "BUY",
-    "amount": 100,
+    "venue": "polymarket",
+    "isLimitOrder": True,
+    "marketConditionId": "0x...",
+    "marketQuestion": "Will BTC close above 80k on Friday?",
+    "orderSize": 10,
     "price": 0.65,
-    "orderType": "LIMIT"
+    "outcome": "YES",
+    "reasoning": "Short-term momentum + options skew support YES",
+    "source": "sdk:example",
+    "skillSlug": "example-skill",
+    "order": {
+        "maker": "0x...",
+        "signer": "0x...",
+        "taker": "0x0000000000000000000000000000000000000000",
+        "tokenId": "69136365945621600854789649488423522395843457249417452310260493085275775221076",
+        "makerAmount": "6500000",
+        "takerAmount": "10000000",
+        "side": "BUY",
+        "expiration": "0",
+        "nonce": "0",
+        "feeRateBps": "0",
+        "signature": "0x...",
+        "salt": 599228746038,
+        "signatureType": 0,
+    },
 })
 print(f"Order placed: {result['orderId']}")
 
@@ -124,7 +143,7 @@ open_orders = client.get_open_orders()
 print(f"Open orders: {len(open_orders)}")
 
 # Cancel an order
-cancel_result = client.cancel_order(order_id=result['orderId'])
+cancel_result = client.cancel_order(order_id=result.get('orderId', ''))
 print(f"Cancelled: {cancel_result['success']}")
 ```
 
@@ -153,7 +172,7 @@ if not check['hasCredentials']:
 
 ### Base URL
 
-The client defaults to the test environment. For production, set the base URL:
+The client defaults to production (`https://api.aionmarket.com/bvapi`). For staging, set the base URL:
 
 ```python
 client = AionMarketClient(
@@ -187,6 +206,8 @@ client = AionMarketClient(api_key="your-api-key", timeout=30)
 - `get_prices_history()` - Historical price data
 - `get_briefing()` - Agent briefing with alerts and recommendations
 - `get_market_context()` - Pre-trade market assessment
+- `get_closed_positions()` - Closed positions by wallet
+- `get_current_positions()` - Current positions by wallet
 
 ### Wallet Management
 
@@ -216,7 +237,14 @@ except ApiError as e:
     print(f"API Error: {e.message}")
     print(f"Status Code: {e.status_code}")
     print(f"Error Code: {e.code}")
+    print(f"Raw Body: {e.response_body}")
 ```
+
+Notes:
+
+- SDK no longer strips response envelopes (`success/data`). You get the full JSON payload.
+- For non-2xx responses, `ApiError.response_body` contains raw backend error JSON (for example `detail`, `fix`, `hint`, `x402_url`).
+- You can call `client.request(method, path, params=..., json=...)` for passthrough access.
 
 ## Project Structure
 
@@ -237,7 +265,7 @@ aionmarket-sdk/
 ### Setup Development Environment
 
 ```bash
-git clone https://github.com/aionmarket/aionmarket-sdk.git
+git clone https://github.com/aionmarket/aion-sdk.git
 cd aionmarket-sdk
 pip install -e ".[dev]"
 ```
@@ -266,7 +294,7 @@ For detailed API documentation, visit: https://docs.aionmarket.com
 
 - 📧 Email: support@aionmarket.com
 - 🐛 Issues: https://github.com/aionmarket/aionmarket-sdk/issues
-- 💬 Discussions: https://github.com/aionmarket/aionmarket-sdk
+- 💬 Discussions: https://github.com/aionmarket/aion-sdk
 
 ## License
 

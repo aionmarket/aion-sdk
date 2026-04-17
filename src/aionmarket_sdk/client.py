@@ -12,19 +12,26 @@ from urllib import error, parse, request
 
 # Production base URL — never changes between releases.
 # Override via AIONMARKET_BASE_URL env var or explicit base_url parameter.
-_PRODUCTION_URL = "https://pm-t1.bxingupdate.com/bvapi"
+_PRODUCTION_URL = "https://api.aionmarket.com/bvapi"
 
 
 @dataclass
 class ApiError(Exception):
-    """Exception raised when API returns an error"""
+    """Exception raised when API returns an error response."""
 
     message: str
     code: int = 500
     status_code: int = 500
+    response_body: Any = None
+    response_headers: Optional[Dict[str, str]] = None
+    url: str = ""
+    method: str = ""
 
     def __str__(self) -> str:
-        return f"ApiError(code={self.code}, status={self.status_code}): {self.message}"
+        return (
+            f"ApiError(code={self.code}, status={self.status_code}, "
+            f"method={self.method}, url={self.url}): {self.message}"
+        )
 
 
 class AionMarketClient:
@@ -53,7 +60,7 @@ class AionMarketClient:
         Base URL resolution priority (highest to lowest):
           1. Explicit ``base_url`` parameter
           2. ``AIONMARKET_BASE_URL`` environment variable
-          3. Production URL (https://pm-t1.bxingupdate.com/bvapi)
+          3. Production URL (https://api.aionmarket.com/bvapi)
 
         For sandbox / staging use, set the environment variable instead of
         modifying code:
@@ -89,6 +96,21 @@ class AionMarketClient:
             headers["Authorization"] = f"Bearer {self.api_key}"
         return headers
 
+    def _normalize_query_params(self, params: Dict[str, Any]) -> Dict[str, Any]:
+        """Normalize query params so booleans are compatible with backend validators."""
+        normalized: Dict[str, Any] = {}
+        for key, value in params.items():
+            if isinstance(value, bool):
+                normalized[key] = "true" if value else "false"
+            elif isinstance(value, (list, tuple)):
+                normalized[key] = [
+                    "true" if item is True else "false" if item is False else item
+                    for item in value
+                ]
+            else:
+                normalized[key] = value
+        return normalized
+
     def _request(
         self,
         method: str,
@@ -113,7 +135,7 @@ class AionMarketClient:
         """
         url = f"{self.base_url}/{path.lstrip('/')}"
         if params:
-            query = parse.urlencode(params, doseq=True)
+            query = parse.urlencode(self._normalize_query_params(params), doseq=True)
             url = f"{url}?{query}"
 
         payload: Optional[bytes] = None
@@ -127,53 +149,63 @@ class AionMarketClient:
             method=method.upper(),
         )
 
-        status_code = 200
-        raw_text = ""
+        normalized_method = method.upper()
         try:
             with request.urlopen(req, timeout=self.timeout) as resp:
-                status_code = resp.getcode()
                 raw_text = resp.read().decode("utf-8")
+                try:
+                    return jsonlib.loads(raw_text)
+                except Exception:
+                    return raw_text
         except error.HTTPError as exc:
-            status_code = exc.code
             raw_text = exc.read().decode("utf-8", errors="replace")
+            try:
+                body = jsonlib.loads(raw_text)
+            except Exception:
+                body = raw_text
+
+            message = str(body)
+            code = exc.code
+            if isinstance(body, dict):
+                message = str(
+                    body.get("error")
+                    or body.get("message")
+                    or body.get("detail")
+                    or body
+                )
+                body_code = body.get("code")
+                if isinstance(body_code, int):
+                    code = body_code
+
+            raise ApiError(
+                message=message,
+                code=code,
+                status_code=exc.code,
+                response_body=body,
+                response_headers=dict(exc.headers.items()) if exc.headers else {},
+                url=url,
+                method=normalized_method,
+            ) from exc
         except error.URLError as exc:
             raise ApiError(
                 message=f"Request failed: {exc.reason}",
+                code=500,
                 status_code=500,
+                response_body={"reason": str(exc.reason)},
+                response_headers={},
+                url=url,
+                method=normalized_method,
             ) from exc
 
-        body: Any
-        try:
-            body = jsonlib.loads(raw_text)
-        except Exception as exc:  # pragma: no cover
-            raise ApiError(
-                message=f"Non-JSON response: {raw_text}",
-                status_code=status_code,
-            ) from exc
-
-        if status_code >= 400:
-            if isinstance(body, dict):
-                raise ApiError(
-                    message=str(body.get("error") or body.get("message") or body),
-                    code=int(body.get("code", status_code)),
-                    status_code=status_code,
-                )
-            raise ApiError(
-                message=str(body),
-                code=status_code,
-                status_code=status_code,
-            )
-
-        if isinstance(body, dict) and "success" in body:
-            if not body.get("success"):
-                raise ApiError(
-                    message=str(body.get("error") or "Request failed"),
-                    code=int(body.get("code", 500)),
-                    status_code=status_code,
-                )
-            return body.get("data")
-
-        return body
+    def request(
+        self,
+        method: str,
+        path: str,
+        params: Optional[Dict[str, Any]] = None,
+        json: Optional[Dict[str, Any]] = None,
+    ) -> Any:
+        """Raw request passthrough for agents needing full API responses."""
+        return self._request(method=method, path=path, params=params, json=json)
 
     # ============================================================
     # Agent Management
@@ -201,7 +233,7 @@ class AionMarketClient:
         Returns:
             Agent preview information
         """
-        return self._request("GET", f"/agents/claim/{claim_code}")
+        return self._request("GET", "/agents/claim", params={"claimCode": claim_code})
 
     def get_me(self) -> Dict[str, Any]:
         """
@@ -431,6 +463,71 @@ class AionMarketClient:
             params["myProbability"] = my_probability
         return self._request("GET", f"/markets/context/{market_id}", params=params)
 
+    def get_closed_positions(
+        self,
+        user: str,
+        venue: str = "polymarket",
+        market: Optional[str] = None,
+        title: Optional[str] = None,
+        limit: int = 10,
+        offset: int = 0,
+        sort_by: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+    ) -> Any:
+        """Get closed positions for a wallet address."""
+        params: Dict[str, Any] = {
+            "user": user,
+            "venue": venue,
+            "limit": limit,
+            "offset": offset,
+        }
+        if market:
+            params["market"] = market
+        if title:
+            params["title"] = title
+        if sort_by:
+            params["sortBy"] = sort_by
+        if sort_direction:
+            params["sortDirection"] = sort_direction
+        return self._request("GET", "/markets/closed-positions", params=params)
+
+    def get_current_positions(
+        self,
+        user: str,
+        venue: str = "polymarket",
+        market: Optional[str] = None,
+        title: Optional[str] = None,
+        size_threshold: Optional[float] = None,
+        redeemable: Optional[bool] = None,
+        mergeable: Optional[bool] = None,
+        limit: int = 100,
+        offset: int = 0,
+        sort_by: Optional[str] = None,
+        sort_direction: Optional[str] = None,
+    ) -> Any:
+        """Get current positions for a wallet address."""
+        params: Dict[str, Any] = {
+            "user": user,
+            "venue": venue,
+            "limit": limit,
+            "offset": offset,
+        }
+        if market:
+            params["market"] = market
+        if title:
+            params["title"] = title
+        if size_threshold is not None:
+            params["sizeThreshold"] = size_threshold
+        if redeemable is not None:
+            params["redeemable"] = redeemable
+        if mergeable is not None:
+            params["mergeable"] = mergeable
+        if sort_by:
+            params["sortBy"] = sort_by
+        if sort_direction:
+            params["sortDirection"] = sort_direction
+        return self._request("GET", "/markets/current-positions", params=params)
+
     # ============================================================
     # Wallet Management
     # ============================================================
@@ -495,6 +592,47 @@ class AionMarketClient:
         Returns:
             Trade execution result with order ID and status
         """
+        required_top_fields = [
+            "marketConditionId",
+            "marketQuestion",
+            "orderSize",
+            "price",
+            "outcome",
+            "order",
+        ]
+        missing_top = [k for k in required_top_fields if k not in payload]
+        if missing_top:
+            raise ValueError(
+                "trade payload missing required fields: "
+                + ", ".join(sorted(missing_top))
+            )
+
+        order_payload = payload.get("order")
+        if not isinstance(order_payload, dict):
+            raise ValueError("trade payload field 'order' must be a dict")
+
+        required_order_fields = [
+            "maker",
+            "signer",
+            "taker",
+            "tokenId",
+            "makerAmount",
+            "takerAmount",
+            "side",
+            "expiration",
+            "nonce",
+            "feeRateBps",
+            "signature",
+            "salt",
+            "signatureType",
+        ]
+        missing_order = [k for k in required_order_fields if k not in order_payload]
+        if missing_order:
+            raise ValueError(
+                "trade.order missing required fields: "
+                + ", ".join(sorted(missing_order))
+            )
+
         return self._request("POST", "/markets/trade", json=payload)
 
     def get_open_orders(

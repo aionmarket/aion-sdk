@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: aionmarket-sdk
-Version: 0.2.0
+Version: 0.2.2
 Summary: Python SDK for AI Agent trading on prediction markets (Polymarket MVP)
 Author-email: AION Market <support@aionmarket.com>
 License-Expression: MIT

@@ -193,3 +193,51 @@ def test_trade_order_dto_required_fields_match_sdk_nested_order_contract() -> No
     }
 
     assert dto_required == sdk_required
+
+
+def test_trade_service_uses_dynamic_order_type_not_hardcoded_fak() -> None:
+    service_path = (
+        _workspace_root()
+        / "apps"
+        / "api"
+        / "src"
+        / "modules"
+        / "aiagent"
+        / "aiagent.market.service.ts"
+    )
+    source = _read(service_path)
+
+    assert "const resolvedOrderType =" in source
+    assert "orderType: resolvedOrderType" in source
+
+
+def test_trade_service_has_market_buy_precision_guardrail() -> None:
+    service_path = (
+        _workspace_root()
+        / "apps"
+        / "api"
+        / "src"
+        / "modules"
+        / "aiagent"
+        / "aiagent.market.service.ts"
+    )
+    source = _read(service_path)
+
+    assert "validateMarketBuyAmountPrecision" in source
+    assert "makerAmount % 10000n" in source
+    assert "takerAmount % 100n" in source
+
+
+def test_skill_examples_match_briefing_and_context_response_shapes() -> None:
+    skill_path = (
+        _workspace_root()
+        / "skills"
+        / "aionmarket-trading"
+        / "skill.md"
+    )
+    source = _read(skill_path)
+
+    assert "context.get(\"market\", {})" in source
+    assert "context.get(\"positions\", {})" in source
+    assert "context.get(\"safeguards\", {})" in source
+    assert "briefing.get(\"opportunities\", {}).get(\"newMarkets\", [])" in source

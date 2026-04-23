@@ -555,7 +555,16 @@ class AionMarketClient:
         sort_by: Optional[str] = None,
         sort_direction: Optional[str] = None,
     ) -> Any:
-        """Get current positions for a wallet address."""
+        """Get current positions for a wallet address.
+
+        Venue behavior:
+            - polymarket: keeps existing Polymarket query behavior.
+            - kalshi: queries local Kalshi positions stored in mk_kalshi_position.
+
+        Notes:
+            - For kalshi, `user` should be the Solana wallet address.
+            - Polymarket-only filters (e.g. mergeable/redeemable) are ignored by kalshi.
+        """
         params: Dict[str, Any] = {
             "user": user,
             "venue": venue,
@@ -634,10 +643,10 @@ class AionMarketClient:
 
     def trade(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute a market trade order.
+        Execute a market trade order supporting Polymarket V1 and V2.
 
         Args:
-            payload: Trade order payload with market_id, side, amount, price, etc.
+            payload: Trade order payload.
 
         Returns:
             Trade execution result with order ID and status
@@ -661,7 +670,7 @@ class AionMarketClient:
         if not isinstance(order_payload, dict):
             raise ValueError("trade payload field 'order' must be a dict")
 
-        required_order_fields = [
+        required_order_fields_base = [
             "maker",
             "signer",
             "taker",
@@ -670,21 +679,129 @@ class AionMarketClient:
             "takerAmount",
             "side",
             "expiration",
-            "nonce",
-            "feeRateBps",
             "signature",
             "salt",
             "signatureType",
         ]
-        missing_order = [k for k in required_order_fields if k not in order_payload]
-        if missing_order:
+        missing_base = [k for k in required_order_fields_base if k not in order_payload]
+        if missing_base:
             raise ValueError(
                 "trade.order missing required fields: "
-                + ", ".join(sorted(missing_order))
+                + ", ".join(sorted(missing_base))
             )
+
+        is_v2_order = (
+            "timestamp" in order_payload
+            or "metadata" in order_payload
+            or "builder" in order_payload
+            or order_payload.get("signatureType") == 3
+        )
+
+        if not is_v2_order:
+            required_v1_fields = ["nonce", "feeRateBps"]
+            missing_v1 = [k for k in required_v1_fields if k not in order_payload]
+            if missing_v1:
+                raise ValueError(
+                    "V1 trade.order missing required fields: "
+                    + ", ".join(sorted(missing_v1))
+                )
 
         normalized_payload = self._normalize_trade_payload(payload)
         return self._request("POST", "/markets/trade", json=normalized_payload)
+
+    def kalshi_quote(
+        self,
+        market_ticker: str,
+        side: str,
+        action: str,
+        amount: Optional[float] = None,
+        shares: Optional[float] = None,
+        user_public_key: Optional[str] = None,
+        destination_wallet: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Create a Kalshi quote via DFlow and return unsigned transaction payload."""
+        payload: Dict[str, Any] = {
+            "marketTicker": market_ticker,
+            "side": str(side).upper(),
+            "action": str(action).upper(),
+        }
+        if amount is not None:
+            payload["amount"] = amount
+        if shares is not None:
+            payload["shares"] = shares
+        if user_public_key:
+            payload["userPublicKey"] = user_public_key
+        if destination_wallet:
+            payload["destinationWallet"] = destination_wallet
+        return self._request("POST", "/kalshi/agent/quote", json=payload)
+
+    def kalshi_submit(
+        self,
+        market_ticker: str,
+        side: str,
+        action: str,
+        signed_transaction: str,
+        quote_id: str,
+        user_public_key: str,
+        amount: Optional[float] = None,
+        shares: Optional[float] = None,
+        destination_wallet: Optional[str] = None,
+        in_amount: Optional[str] = None,
+        out_amount: Optional[str] = None,
+        min_out_amount: Optional[str] = None,
+        skill_slug: Optional[str] = None,
+        source: Optional[str] = None,
+        reasoning: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """Submit a signed Kalshi transaction generated from kalshi_quote().
+
+        Args:
+            market_ticker: Kalshi market ticker.
+            side: 'YES' or 'NO'.
+            action: 'BUY' or 'SELL'.
+            signed_transaction: Base64-encoded signed Solana transaction.
+            quote_id: Quote ID from kalshi_quote() response.
+            user_public_key: Signing Solana wallet address.
+            amount: BUY amount in USDC (required for BUY).
+            shares: SELL shares (required for SELL).
+            destination_wallet: Destination wallet for received tokens.
+            in_amount: DFlow input amount from quote response (scaled integer string).
+            out_amount: DFlow output amount from quote response (scaled integer string).
+            min_out_amount: DFlow minimum output from quote response (scaled integer string).
+            skill_slug: Skill identifier for strategy logging.
+            source: Source tag for strategy logging.
+            reasoning: Strategy reasoning text.
+
+        Returns:
+            Order confirmation with orderId, txSignature, and orderStatus.
+        """
+        payload: Dict[str, Any] = {
+            "marketTicker": market_ticker,
+            "side": str(side).upper(),
+            "action": str(action).upper(),
+            "signedTransaction": signed_transaction,
+            "quoteId": quote_id,
+            "userPublicKey": user_public_key,
+        }
+        if amount is not None:
+            payload["amount"] = amount
+        if shares is not None:
+            payload["shares"] = shares
+        if destination_wallet:
+            payload["destinationWallet"] = destination_wallet
+        if in_amount:
+            payload["inAmount"] = in_amount
+        if out_amount:
+            payload["outAmount"] = out_amount
+        if min_out_amount:
+            payload["minOutAmount"] = min_out_amount
+        if skill_slug:
+            payload["skillSlug"] = skill_slug
+        if source:
+            payload["source"] = source
+        if reasoning:
+            payload["reasoning"] = reasoning
+        return self._request("POST", "/kalshi/agent/submit", json=payload)
 
     def get_open_orders(
         self,

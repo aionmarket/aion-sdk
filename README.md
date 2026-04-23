@@ -1,6 +1,6 @@
 # AION Market SDK (MVP)
 
-Python SDK for AI Agent trading operations on Polymarket prediction markets.
+Python SDK for AI Agent trading operations on Polymarket and Kalshi prediction markets.
 
 ## Features
 
@@ -8,6 +8,7 @@ Python SDK for AI Agent trading operations on Polymarket prediction markets.
 - 📊 **Market Operations** - Search markets, get prices, access briefings and context
 - 💳 **Wallet Management** - Register and verify Polymarket CLOB credentials
 - 💹 **Trading** - Execute trades, manage orders, claim rewards
+- 🌤️ **Kalshi BYOW** - Quote -> local sign -> submit flow via DFlow
 - 🔐 **Type-Safe** - Full type hints with Python 3.9+ support
 - 📦 **Lightweight** - Minimal dependencies (only requests)
 
@@ -174,7 +175,7 @@ client = AionMarketClient(api_key="your-api-key", timeout=30)
 - `get_briefing()` - Agent briefing with alerts and recommendations
 - `get_market_context()` - Pre-trade market assessment
 - `get_closed_positions()` - Closed positions by wallet
-- `get_current_positions()` - Current positions by wallet
+- `get_current_positions()` - Current positions by wallet (venue=`polymarket` or `kalshi`)
 
 ### Wallet Management
 
@@ -190,6 +191,8 @@ client = AionMarketClient(api_key="your-api-key", timeout=30)
 - `cancel_order()` - Cancel single order
 - `cancel_all_orders()` - Cancel all orders
 - `redeem()` - Claim market settlement rewards
+- `kalshi_quote()` - Create Kalshi quote (unsigned transaction)
+- `kalshi_submit()` - Submit signed Kalshi transaction
 
 ## Error Handling
 

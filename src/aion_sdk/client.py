@@ -896,6 +896,27 @@ class AionMarketClient:
         """
         return self._request("POST", "/wallet/unlink")
 
+    def update_agent_sol_address(self, sol_address: str) -> Dict[str, Any]:
+        """
+        Update the agent solAddress used for Kalshi market flows.
+
+        Backend logic:
+            1. Parse api_key_code from Authorization Bearer header.
+            2. Resolve mk_ai_agent_api_key.user_id and mk_ai_agent_api_key.id.
+            3. Update mk_ai_agent.sol_address by (user_id, api_key_id).
+
+        Args:
+            sol_address: Solana address to be stored in mk_ai_agent.sol_address.
+
+        Returns:
+            Dict containing success flag and updated solAddress.
+        """
+        return self._request(
+            "POST",
+            "/wallet/update-sol-address",
+            json={"solAddress": sol_address},
+        )
+
     # ============================================================
     # Trading Operations
     # ============================================================

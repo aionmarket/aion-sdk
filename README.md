@@ -181,6 +181,7 @@ client = AionMarketClient(api_key="your-api-key", timeout=30)
 
 - `check_wallet_credentials()` - Verify registered credentials
 - `register_wallet_credentials()` - Register Polymarket CLOB credentials
+- `update_agent_sol_address()` - Update agent `sol_address` for Kalshi flows
 
 ### Trading Operations
 

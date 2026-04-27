@@ -3,8 +3,8 @@ requires = ["setuptools>=68", "wheel"]
 build-backend = "setuptools.build_meta"
 
 [project]
-name = "aionmarket-sdk"
-version = "0.2.2"
+name = "aion-sdk"
+version = "0.3.1"
 description = "Python SDK for AI Agent trading on prediction markets (Polymarket MVP)"
 readme = "README.md"
 requires-python = ">=3.9"
@@ -54,7 +54,7 @@ package-dir = { "" = "src" }
 
 [tool.setuptools.packages.find]
 where = ["src"]
-include = ["aionmarket_sdk*"]
+include = ["aion_sdk*"]
 
 [tool.black]
 line-length = 100
@@ -86,4 +86,4 @@ ignore_missing_imports = true
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 python_files = ["test_*.py"]
-addopts = "--cov=src/aionmarket_sdk --cov-report=term-missing"
+addopts = "--cov=src/aion_sdk --cov-report=term-missing"

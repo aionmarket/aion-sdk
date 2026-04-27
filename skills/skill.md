@@ -32,7 +32,7 @@ AionMarket lets AI agents:
 ### 1. Install the SDK
 
 ```bash
-pip install aionmarket-sdk
+pip install aion-sdk
 ```
 
 ### 2. Set Environment Variables
@@ -54,7 +54,7 @@ export AIONMARKET_BASE_URL="https://pm-t1.bxingupdate.com/bvapi"
 ### 3. Register Your Agent
 
 ```python
-from aionmarket_sdk import AionMarketClient
+from aion_sdk import AionMarketClient
 
 # No API key yet — register first
 client = AionMarketClient()
@@ -83,7 +83,7 @@ print(f"Agent: {agent['name']}, Status: {agent['status']}")
 **Always check context before trading:**
 
 ```python
-from aionmarket_sdk import AionMarketClient
+from aion_sdk import AionMarketClient
 
 client = AionMarketClient()
 
@@ -167,7 +167,7 @@ if not check["hasCredentials"]:
 ## Heartbeat (Run Periodically)
 
 ```python
-from aionmarket_sdk import AionMarketClient
+from aion_sdk import AionMarketClient
 
 client = AionMarketClient()
 
@@ -227,7 +227,7 @@ client.redeem(market_id="...", side="YES")
 ## Error Handling
 
 ```python
-from aionmarket_sdk import AionMarketClient, ApiError
+from aion_sdk import AionMarketClient, ApiError
 
 client = AionMarketClient()
 
@@ -238,7 +238,7 @@ result = client.get_me()
 If you need to inspect backend details for diagnostics:
 
 ```python
-from aionmarket_sdk import AionMarketClient, ApiError
+from aion_sdk import AionMarketClient, ApiError
 
 client = AionMarketClient()
 
@@ -261,7 +261,7 @@ print(raw)
 
 ## Join AionMarket
 
-1. **Install** — `pip install aionmarket-sdk`
+1. **Install** — `pip install aion-sdk`
 2. **Register** — Call `register_agent()` to get your API key
 3. **Configure wallet** — Register Polymarket CLOB credentials
 4. **Check context** — Always call `get_market_context()` before trading

@@ -76,7 +76,11 @@ if markets:
     print(f"Your position: {context['myPosition']}")
     print(f"Suggested risk limit: {context['riskLimit']}")
 
-# Place a trade
+# Place a trade (Polymarket V2 — pUSD settlement)
+# NOTE: V2 settles in pUSD (Polymarket's ERC-20 collateral token, backed by
+#       USDC.e). Wallets must hold pUSD — wrap USDC.e → pUSD via the
+#       CollateralOnramp contract first. V1 orders still settle in USDC.e
+#       directly (legacy).
 result = client.trade({
     "venue": "polymarket",
     "isLimitOrder": True,
@@ -97,11 +101,13 @@ result = client.trade({
         "takerAmount": "10000000",
         "side": "BUY",
         "expiration": "0",
-        "nonce": "0",
-        "feeRateBps": "0",
+        # V2 fields (replace V1 nonce / feeRateBps)
+        "timestamp": "1714400000",        # unix seconds when the order was signed
+        "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
+        "builder":  "0x0000000000000000000000000000000000000000000000000000000000000000",
         "signature": "0x...",
         "salt": 599228746038,
-        "signatureType": 0,
+        "signatureType": 3,                 # 3 = Polymarket V2
     },
 })
 print(f"Order placed: {result['orderId']}")

@@ -923,7 +923,23 @@ class AionMarketClient:
 
     def trade(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute a market trade order supporting Polymarket V1 and V2.
+        Execute a market trade order on Polymarket.
+
+        Order versions
+        --------------
+        - **V2 (recommended)** — settles in **pUSD** (Polymarket's ERC-20
+          collateral token, 6 decimals, backed 1:1 by USDC.e). The signed order
+          must carry ``signatureType=3`` and a non-zero ``timestamp``
+          (unix seconds). ``metadata`` / ``builder`` default to ``bytes32(0)``
+          server-side. Wallets must hold pUSD; wrap USDC.e → pUSD via the
+          ``CollateralOnramp`` contract first (see Polymarket docs).
+        - **V1 (legacy)** — settled directly in **USDC.e**
+          (``0x2791bca1...``). Kept for backward compatibility only; new agents
+          should use V2.
+
+        The SDK auto-detects the version from the order payload (presence of
+        ``timestamp``/``metadata``/``builder`` or ``signatureType==3`` => V2;
+        otherwise V1 is assumed and ``nonce`` / ``feeRateBps`` become required).
 
         Args:
             payload: Trade order payload.
@@ -977,7 +993,18 @@ class AionMarketClient:
             or order_payload.get("signatureType") == 3
         )
 
-        if not is_v2_order:
+        if is_v2_order:
+            # Polymarket V2 settles in pUSD (ERC-20 wrapper of USDC.e). Orders
+            # require `timestamp` (seconds since epoch) and `signatureType=3`.
+            # `metadata` / `builder` default to bytes32(0) server-side.
+            if "timestamp" not in order_payload or str(
+                order_payload.get("timestamp") or ""
+            ).strip() in {"", "0"}:
+                raise ValueError(
+                    "V2 trade.order requires a non-zero 'timestamp' "
+                    "(unix seconds when the order was signed)"
+                )
+        else:
             required_v1_fields = ["nonce", "feeRateBps"]
             missing_v1 = [k for k in required_v1_fields if k not in order_payload]
             if missing_v1:

@@ -83,11 +83,10 @@ def test_http_error_preserves_raw_error_body_and_context() -> None:
                         "takerAmount": "1",
                         "side": "BUY",
                         "expiration": "0",
-                        "nonce": "0",
-                        "feeRateBps": "0",
                         "signature": "0xabc",
                         "salt": 1,
-                        "signatureType": 0,
+                        "signatureType": 3,
+                        "timestamp": "1713000000",
                     },
                 }
             )
@@ -180,11 +179,10 @@ def test_batch_trade_sends_orders_array() -> None:
             "takerAmount": "1000000",
             "side": "BUY",
             "expiration": "0",
-            "nonce": "0",
-            "feeRateBps": "0",
             "signature": "0xabc",
             "salt": 123,
-            "signatureType": 0,
+            "signatureType": 3,
+            "timestamp": "1713000000",
         },
     }
     with patch("urllib.request.urlopen", side_effect=_assert_url):
@@ -230,7 +228,7 @@ def test_trade_payload_validation_catches_missing_nested_order_fields() -> None:
             }
         )
 
-    assert "trade.order missing required fields" in str(exc.value)
+    assert "trade.order missing required V2 fields" in str(exc.value)
 
 
 def test_trade_normalizes_side_from_enum_like_value_and_signature_type() -> None:
@@ -254,18 +252,17 @@ def test_trade_normalizes_side_from_enum_like_value_and_signature_type() -> None
             "takerAmount": "1",
             "side": _EnumLike(),
             "expiration": "0",
-            "nonce": "0",
-            "feeRateBps": "0",
             "signature": "0xabc",
             "salt": 1,
-            "signatureType": "0",
+            "signatureType": "3",
+            "timestamp": "1713000000",
         },
     }
 
     def _assert_payload(req, timeout=None):
         body = json.loads(req.data.decode("utf-8"))
         assert body["order"]["side"] == "BUY"
-        assert body["order"]["signatureType"] == 0
+        assert body["order"]["signatureType"] == 3
         return _MockResponse({"success": True, "orderId": "oid"})
 
     with patch("urllib.request.urlopen", side_effect=_assert_payload):
@@ -294,11 +291,10 @@ def test_trade_rejects_invalid_side_before_request() -> None:
                     "takerAmount": "1",
                     "side": "hold",
                     "expiration": "0",
-                    "nonce": "0",
-                    "feeRateBps": "0",
                     "signature": "0xabc",
                     "salt": 1,
-                    "signatureType": 0,
+                    "signatureType": 3,
+                    "timestamp": "1713000000",
                 },
             }
         )
@@ -324,11 +320,10 @@ def test_trade_normalizes_order_type_to_uppercase() -> None:
             "takerAmount": "1",
             "side": "BUY",
             "expiration": "0",
-            "nonce": "0",
-            "feeRateBps": "0",
             "signature": "0xabc",
             "salt": 1,
-            "signatureType": 0,
+            "signatureType": 3,
+            "timestamp": "1713000000",
         },
     }
 
@@ -361,11 +356,10 @@ def test_trade_sets_default_order_type_from_is_limit_order() -> None:
             "takerAmount": "1",
             "side": "BUY",
             "expiration": "0",
-            "nonce": "0",
-            "feeRateBps": "0",
             "signature": "0xabc",
             "salt": 1,
-            "signatureType": 0,
+            "signatureType": 3,
+            "timestamp": "1713000000",
         },
     }
 
@@ -401,11 +395,10 @@ def test_trade_rejects_invalid_order_type_before_request() -> None:
                     "takerAmount": "1",
                     "side": "BUY",
                     "expiration": "0",
-                    "nonce": "0",
-                    "feeRateBps": "0",
                     "signature": "0xabc",
                     "salt": 1,
-                    "signatureType": 0,
+                    "signatureType": 3,
+                    "timestamp": "1713000000",
                 },
             }
         )
@@ -1401,8 +1394,8 @@ def test_kalshi_submit_optional_dflow_fields() -> None:
 # ============================================================
 
 
-def _make_v1_trade_payload(**overrides: Any) -> dict:
-    """Helper to create a valid V1 trade payload with optional overrides."""
+def _make_v2_trade_payload(**overrides: Any) -> dict:
+    """Helper to create a valid V2 trade payload with optional overrides."""
     payload = {
         "marketConditionId": "0x1",
         "marketQuestion": "q",
@@ -1418,11 +1411,10 @@ def _make_v1_trade_payload(**overrides: Any) -> dict:
             "takerAmount": "1",
             "side": "BUY",
             "expiration": "0",
-            "nonce": "0",
-            "feeRateBps": "0",
             "signature": "0xabc",
             "salt": 1,
-            "signatureType": 0,
+            "signatureType": 3,
+            "timestamp": "1713000000",
         },
     }
     for k, v in overrides.items():
@@ -1433,30 +1425,10 @@ def _make_v1_trade_payload(**overrides: Any) -> dict:
     return payload
 
 
-def test_trade_v2_order_detected_by_timestamp() -> None:
-    """V2 orders (with 'timestamp') don't require nonce/feeRateBps."""
+def test_trade_v2_happy_path() -> None:
+    """V2 orders with signatureType=3 + non-zero timestamp succeed."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = {
-        "marketConditionId": "0x1",
-        "marketQuestion": "q",
-        "orderSize": 1,
-        "price": 0.5,
-        "outcome": "YES",
-        "order": {
-            "maker": "0x1",
-            "signer": "0x1",
-            "taker": "0x0",
-            "tokenId": "1",
-            "makerAmount": "1",
-            "takerAmount": "1",
-            "side": "SELL",
-            "expiration": "0",
-            "signature": "0xabc",
-            "salt": 1,
-            "signatureType": 3,
-            "timestamp": "1713000000",
-        },
-    }
+    payload = _make_v2_trade_payload(**{"order.side": "SELL"})
 
     with patch("urllib.request.urlopen", return_value=_MockResponse({"success": True})):
         result = client.trade(payload)
@@ -1464,31 +1436,17 @@ def test_trade_v2_order_detected_by_timestamp() -> None:
     assert result["success"] is True
 
 
-def test_trade_v2_order_detected_by_builder() -> None:
+def test_trade_v2_passes_optional_builder_through() -> None:
+    """Optional `builder` field is preserved in the outgoing payload."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = {
-        "marketConditionId": "0x1",
-        "marketQuestion": "q",
-        "orderSize": 1,
-        "price": 0.5,
-        "outcome": "YES",
-        "order": {
-            "maker": "0x1",
-            "signer": "0x1",
-            "taker": "0x0",
-            "tokenId": "1",
-            "makerAmount": "1",
-            "takerAmount": "1",
-            "side": "BUY",
-            "expiration": "0",
-            "signature": "0xabc",
-            "salt": 1,
-            "signatureType": 0,
-            "builder": "0xbuilder",
-        },
-    }
+    payload = _make_v2_trade_payload(**{"order.builder": "0xbuilder"})
 
-    with patch("urllib.request.urlopen", return_value=_MockResponse({"success": True})):
+    def _capture(req, timeout=None):
+        body = json.loads(req.data.decode("utf-8"))
+        assert body["order"]["builder"] == "0xbuilder"
+        return _MockResponse({"success": True})
+
+    with patch("urllib.request.urlopen", side_effect=_capture):
         result = client.trade(payload)
 
     assert result["success"] is True
@@ -1496,7 +1454,7 @@ def test_trade_v2_order_detected_by_builder() -> None:
 
 def test_trade_side_from_bytes() -> None:
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v1_trade_payload()
+    payload = _make_v2_trade_payload()
     payload["order"]["side"] = b"sell"
 
     with patch("urllib.request.urlopen", return_value=_MockResponse({"ok": True})) as mock_open:
@@ -1508,7 +1466,7 @@ def test_trade_side_from_bytes() -> None:
 
 def test_trade_side_non_string_raises() -> None:
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v1_trade_payload()
+    payload = _make_v2_trade_payload()
     payload["order"]["side"] = 123
 
     with pytest.raises(ValueError, match="must be a string compatible with BUY/SELL"):
@@ -1517,7 +1475,7 @@ def test_trade_side_non_string_raises() -> None:
 
 def test_trade_signature_type_non_integer_raises() -> None:
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v1_trade_payload()
+    payload = _make_v2_trade_payload()
     payload["order"]["signatureType"] = "not-a-number"
 
     with pytest.raises(ValueError, match="signatureType must be an integer"):
@@ -1540,7 +1498,7 @@ def test_trade_order_not_dict_raises() -> None:
 
 def test_trade_default_order_type_gtc_when_no_is_limit_order() -> None:
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v1_trade_payload()
+    payload = _make_v2_trade_payload()
     # no orderType, no isLimitOrder — should default to GTC
 
     with patch("urllib.request.urlopen", return_value=_MockResponse({"ok": True})) as mock_open:
@@ -1552,7 +1510,7 @@ def test_trade_default_order_type_gtc_when_no_is_limit_order() -> None:
 
 def test_trade_does_not_mutate_original_payload() -> None:
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v1_trade_payload()
+    payload = _make_v2_trade_payload()
     payload["order"]["side"] = "buy"
     original_side = payload["order"]["side"]
 
@@ -1588,7 +1546,7 @@ def test_normalize_query_params_non_bool_passthrough() -> None:
 def test_trade_side_dotted_enum_string() -> None:
     """Side value like 'Side.BUY' stripped to 'BUY' via dot-split."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v1_trade_payload()
+    payload = _make_v2_trade_payload()
     payload["order"]["side"] = "Side.SELL"
 
     with patch("urllib.request.urlopen", return_value=_MockResponse({"ok": True})) as mock_open:
@@ -1598,32 +1556,31 @@ def test_trade_side_dotted_enum_string() -> None:
     assert body["order"]["side"] == "SELL"
 
 
-def test_trade_v1_missing_nonce_raises() -> None:
-    """V1 order missing nonce/feeRateBps should raise."""
+def test_trade_v2_missing_timestamp_raises() -> None:
+    """V2 order without timestamp should be rejected client-side."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = {
-        "marketConditionId": "0x1",
-        "marketQuestion": "q",
-        "orderSize": 1,
-        "price": 0.5,
-        "outcome": "YES",
-        "order": {
-            "maker": "0x1",
-            "signer": "0x1",
-            "taker": "0x0",
-            "tokenId": "1",
-            "makerAmount": "1",
-            "takerAmount": "1",
-            "side": "BUY",
-            "expiration": "0",
-            "signature": "0xabc",
-            "salt": 1,
-            "signatureType": 0,
-            # missing nonce and feeRateBps
-        },
-    }
+    payload = _make_v2_trade_payload()
+    del payload["order"]["timestamp"]
 
-    with pytest.raises(ValueError, match="V1 trade.order missing required fields"):
+    with pytest.raises(ValueError, match="missing required V2 fields"):
+        client.trade(payload)
+
+
+def test_trade_v2_zero_timestamp_raises() -> None:
+    """V2 order with explicit zero timestamp should be rejected."""
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+    payload = _make_v2_trade_payload(**{"order.timestamp": "0"})
+
+    with pytest.raises(ValueError, match="non-zero 'timestamp'"):
+        client.trade(payload)
+
+
+def test_trade_v2_wrong_signature_type_raises() -> None:
+    """Only signatureType=3 is accepted (V1 / EOA / Proxy variants are rejected)."""
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+    payload = _make_v2_trade_payload(**{"order.signatureType": 0})
+
+    with pytest.raises(ValueError, match="requires signatureType=3"):
         client.trade(payload)
 
 

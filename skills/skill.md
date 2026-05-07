@@ -97,8 +97,7 @@ if context.get("warnings"):
     print(f"Warnings: {context['warnings']}")
 
 # Trade only if you have a thesis (Polymarket V2 — pUSD settlement)
-# NOTE: V2 settles in pUSD (ERC-20 wrapper of USDC.e). Wallet must hold pUSD;
-#       wrap USDC.e → pUSD via Polymarket's CollateralOnramp first.
+# NOTE: V2 settles in pUSD. Wallet must hold pUSD before trading.
 result = client.trade({
     "venue": "polymarket",
     "isLimitOrder": True,
@@ -119,7 +118,7 @@ result = client.trade({
         "takerAmount": "10000000",
         "side": "BUY",
         "expiration": "0",
-        # V2 fields (replace V1 nonce / feeRateBps)
+        # V2 order fields (signatureType=3 with non-zero timestamp)
         "timestamp": "1714400000",
         "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "builder":  "0x0000000000000000000000000000000000000000000000000000000000000000",

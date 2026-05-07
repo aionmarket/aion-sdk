@@ -923,29 +923,24 @@ class AionMarketClient:
 
     def trade(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute a market trade order on Polymarket.
+        Execute a market trade order on Polymarket (V2 only).
 
-        Order versions
-        --------------
-        - **V2 (recommended)** — settles in **pUSD** (Polymarket's ERC-20
-          collateral token, 6 decimals, backed 1:1 by USDC.e). The signed order
-          must carry ``signatureType=3`` and a non-zero ``timestamp``
-          (unix seconds). ``metadata`` / ``builder`` default to ``bytes32(0)``
-          server-side. Wallets must hold pUSD; wrap USDC.e → pUSD via the
-          ``CollateralOnramp`` contract first (see Polymarket docs).
-        - **V1 (legacy)** — settled directly in **USDC.e**
-          (``0x2791bca1...``). Kept for backward compatibility only; new agents
-          should use V2.
+        Polymarket V2 orders settle in **pUSD** (Polymarket's ERC-20 collateral
+        token, 6 decimals). The signed order MUST carry:
 
-        The SDK auto-detects the version from the order payload (presence of
-        ``timestamp``/``metadata``/``builder`` or ``signatureType==3`` => V2;
-        otherwise V1 is assumed and ``nonce`` / ``feeRateBps`` become required).
+        * ``signatureType=3``
+        * a non-zero ``timestamp`` (unix seconds when the order was signed)
+
+        ``metadata`` / ``builder`` are optional and default to ``bytes32(0)``
+        server-side. Wallets must hold pUSD before placing orders.
+
+        The SDK only supports Polymarket V2 pUSD-settled orders.
 
         Args:
-            payload: Trade order payload.
+            payload: V2 trade order payload.
 
         Returns:
-            Trade execution result with order ID and status
+            Trade execution result with order ID and status.
         """
         required_top_fields = [
             "marketConditionId",
@@ -966,7 +961,7 @@ class AionMarketClient:
         if not isinstance(order_payload, dict):
             raise ValueError("trade payload field 'order' must be a dict")
 
-        required_order_fields_base = [
+        required_order_fields = [
             "maker",
             "signer",
             "taker",
@@ -978,42 +973,32 @@ class AionMarketClient:
             "signature",
             "salt",
             "signatureType",
+            "timestamp",
         ]
-        missing_base = [k for k in required_order_fields_base if k not in order_payload]
-        if missing_base:
+        missing_order = [k for k in required_order_fields if k not in order_payload]
+        if missing_order:
             raise ValueError(
-                "trade.order missing required fields: "
-                + ", ".join(sorted(missing_base))
+                "trade.order missing required V2 fields: "
+                + ", ".join(sorted(missing_order))
             )
 
-        is_v2_order = (
-            "timestamp" in order_payload
-            or "metadata" in order_payload
-            or "builder" in order_payload
-            or order_payload.get("signatureType") == 3
-        )
-
-        if is_v2_order:
-            # Polymarket V2 settles in pUSD (ERC-20 wrapper of USDC.e). Orders
-            # require `timestamp` (seconds since epoch) and `signatureType=3`.
-            # `metadata` / `builder` default to bytes32(0) server-side.
-            if "timestamp" not in order_payload or str(
-                order_payload.get("timestamp") or ""
-            ).strip() in {"", "0"}:
-                raise ValueError(
-                    "V2 trade.order requires a non-zero 'timestamp' "
-                    "(unix seconds when the order was signed)"
-                )
-        else:
-            required_v1_fields = ["nonce", "feeRateBps"]
-            missing_v1 = [k for k in required_v1_fields if k not in order_payload]
-            if missing_v1:
-                raise ValueError(
-                    "V1 trade.order missing required fields: "
-                    + ", ".join(sorted(missing_v1))
-                )
-
+        # Run side / signatureType / orderType normalization first so the V2
+        # checks below see canonicalised values (e.g. signatureType="3" -> 3).
         normalized_payload = self._normalize_trade_payload(payload)
+        normalized_order = normalized_payload["order"]
+
+        # V2 must use signatureType=3 and a non-zero timestamp (unix seconds).
+        if normalized_order.get("signatureType") != 3:
+            raise ValueError(
+                "V2 trade.order requires signatureType=3 (pUSD-collateralised order)"
+            )
+
+        if str(normalized_order.get("timestamp") or "").strip() in {"", "0"}:
+            raise ValueError(
+                "V2 trade.order requires a non-zero 'timestamp' "
+                "(unix seconds when the order was signed)"
+            )
+
         return self._request("POST", "/markets/trade", json=normalized_payload)
 
     def batch_trade(self, orders: list) -> Dict[str, Any]:
@@ -1432,3 +1417,96 @@ class AionMarketClient:
         """
         params: Dict[str, Any] = {"venue": venue}
         return self._request("GET", "/markets/portfolio", params=params)
+
+    # ============================================================
+    # Fee Charging Operations
+    # ============================================================
+
+    def charge_polymarket_fee(self, order_hash_id: str) -> Dict[str, Any]:
+        """
+        Charge the platform trading fee for a Polymarket order.
+
+        Platform automatically charges 1% of order notional value
+        (orderSize × price) via Safe AllowanceModule on Polygon.
+        The fee is denominated in pUSD.
+
+        Prerequisites:
+          - User must have enabled AllowanceModule on their Safe wallet
+          - Fireblocks platform address must be added as delegate
+                    - Sufficient pUSD allowance must be set on the module
+
+        This is typically called automatically after order placement,
+        but can be triggered manually if the automatic cron missed it.
+
+        Args:
+            order_hash_id: Polymarket CLOB order hash (e.g. '0xabc123...')
+
+        Returns:
+            Dict with transactionId, feeAmount, and status ('PENDING')
+
+        Raises:
+            ApiError: If order not found, user Safe not configured,
+                or Fireblocks transfer fails
+        """
+        return self._request(
+            "POST",
+            f"/aiagent/charge-fee/polymarket/{order_hash_id}",
+        )
+
+    def charge_kalshi_fee(self, kalshi_order_id: str) -> Dict[str, Any]:
+        """
+        Charge the platform trading fee for a Kalshi order.
+
+        Platform charges 1% of order amount via Fireblocks USDC
+        transfer on Solana. The fee is denominated in native USDC
+        (SPL Token on Solana mainnet).
+
+        Prerequisites:
+          - User's Solana wallet must hold sufficient USDC
+          - User must have granted token approval to platform vault
+
+        This should be called after a successful kalshi_submit() execution.
+
+        Args:
+            kalshi_order_id: Kalshi order transaction signature
+                (returned as txSignature from kalshi_submit())
+
+        Returns:
+            Dict with transactionId, feeAmount, and status ('PENDING')
+
+        Raises:
+            ApiError: If order not found, Solana address missing,
+                or Fireblocks transfer fails
+        """
+        return self._request(
+            "POST",
+            f"/aiagent/charge-fee/kalshi/{kalshi_order_id}",
+        )
+
+    def get_fee_status(
+        self,
+        order_id: str,
+        venue: str = "polymarket",
+    ) -> Dict[str, Any]:
+        """
+        Query the fee charging status for an order.
+
+        Args:
+            order_id: Order identifier (Polymarket orderHashId or
+                Kalshi txSignature)
+            venue: 'polymarket' or 'kalshi'
+
+        Returns:
+            Dict with:
+              - orderHashId: the order identifier
+              - feeAmount: charged amount (null if not yet charged)
+              - status: 'pending' | 'charged' | 'failed' | 'unknown'
+              - errorReason: error description (if failed)
+        """
+        params: Dict[str, Any] = {"venue": venue}
+        return self._request(
+            "GET",
+            f"/aiagent/charge-fee/status/{order_id}",
+            params=params,
+        )
+

@@ -1155,6 +1155,24 @@ def test_register_wallet_credentials() -> None:
     assert body["apiPassphrase"] == "pass1"
 
 
+def test_register_wallet_credentials_with_explicit_signature_type() -> None:
+    response = {"code": 200, "data": {"success": True}}
+    client = AionMarketClient(api_key="k", base_url="https://api.example.com")
+
+    with patch("urllib.request.urlopen", return_value=_MockResponse(response)) as mock_open:
+        client.register_wallet_credentials(
+            "0xwallet",
+            "key1",
+            "secret1",
+            "pass1",
+            signature_type=3,
+        )
+
+    req = mock_open.call_args[0][0]
+    body = json.loads(req.data.decode("utf-8"))
+    assert body["signatureType"] == 3
+
+
 def test_wallet_link_challenge() -> None:
     response = {"code": 200, "data": {"nonce": "abc", "message": "Sign this"}}
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")

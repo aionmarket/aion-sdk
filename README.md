@@ -106,7 +106,7 @@ result = client.trade({
         "builder":  "0x0000000000000000000000000000000000000000000000000000000000000000",
         "signature": "0x...",
         "salt": 599228746038,
-        "signatureType": 3,                 # 3 = Polymarket V2
+        "signatureType": 3,                 # 3 = Deposit wallet (Polymarket V2 / POLY_1271)
     },
 })
 print(f"Order placed: {result['orderId']}")
@@ -136,7 +136,10 @@ if not check['hasCredentials']:
         wallet_address=wallet,
         api_key="polymarket-api-key",
         api_secret="polymarket-api-secret",
-        api_passphrase="polymarket-passphrase"
+        api_passphrase="polymarket-passphrase",
+        # For Polymarket deposit wallets, pass signature_type=3 so the backend
+        # stores the credential under the POLY_1271 / V2 path.
+        # signature_type=3,
     )
     print(f"Credentials registered: {result['success']}")
 ```

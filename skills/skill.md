@@ -124,7 +124,7 @@ result = client.trade({
         "builder":  "0x0000000000000000000000000000000000000000000000000000000000000000",
         "signature": "0x...",
         "salt": 599228746038,
-        "signatureType": 3,
+        "signatureType": 3,  # 3 = Deposit wallet (Polymarket V2 / POLY_1271)
     },
 })
 print(f"Order placed: {result['orderId']}")

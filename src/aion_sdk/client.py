@@ -809,6 +809,7 @@ class AionMarketClient:
         api_key: str,
         api_secret: str,
         api_passphrase: str,
+        signature_type: Optional[int] = None,
     ) -> Dict[str, Any]:
         """
         Register Polymarket CLOB credentials for a wallet.
@@ -818,19 +819,27 @@ class AionMarketClient:
             api_key: Polymarket CLOB API key
             api_secret: Polymarket CLOB API secret
             api_passphrase: Polymarket CLOB API passphrase
+            signature_type: Optional explicit signature type.
+                Use 3 for deposit wallets when registering V2 POLY_1271
+                credentials. When omitted, the backend infers the type using
+                its existing logic.
 
         Returns:
             Registration result
         """
+        payload: Dict[str, Any] = {
+            "walletAddress": wallet_address,
+            "apiKey": api_key,
+            "apiSecret": api_secret,
+            "apiPassphrase": api_passphrase,
+        }
+        if signature_type is not None:
+            payload["signatureType"] = int(signature_type)
+
         return self._request(
             "POST",
             "/wallet/credentials",
-            json={
-                "walletAddress": wallet_address,
-                "apiKey": api_key,
-                "apiSecret": api_secret,
-                "apiPassphrase": api_passphrase,
-            },
+            json=payload,
         )
 
     def wallet_link_challenge(self, address: str) -> Dict[str, Any]:
@@ -868,7 +877,7 @@ class AionMarketClient:
             address: Wallet address being linked
             signature: Signature of the challenge message
             nonce: Challenge nonce from wallet_link_challenge()
-            signature_type: 0=EOA, 1=Polymarket proxy, 2=Gnosis Safe (default: 0)
+            signature_type: 0=EOA, 1=Polymarket proxy, 2=Gnosis Safe, 3=Deposit wallet (default: 0)
 
         Returns:
             Link result with success, wallet_address, wallet_ownership, message, error
@@ -916,6 +925,50 @@ class AionMarketClient:
             "/wallet/update-sol-address",
             json={"solAddress": sol_address},
         )
+
+    def get_wallet_audit_status(self, wallet_address: str) -> Dict[str, Any]:
+        """
+        Check whether a Deposit Wallet (signatureType=3) has completed all
+        12 on-chain approvals required for Polymarket trading.
+
+        The backend looks up ``mk_ai_agent.audits_status`` for the agent
+        bound to the given wallet address:
+
+        * ``0`` — not authorized (agent must perform 12 approvals locally)
+        * ``1`` — fully authorized (ready to trade)
+
+        Args:
+            wallet_address: The Polygon wallet address (Deposit Wallet)
+                to check.
+
+        Returns:
+            Dict with ``walletAddress``, ``auditsStatus`` (0 or 1), and
+            ``auditsStatusText`` ('未授权' or '已授权').
+        """
+        return self._request(
+            "GET",
+            "/wallet/audit-status",
+            params={"walletAddress": wallet_address},
+        )
+
+    def get_wallet_audit_items(self) -> Dict[str, Any]:
+        """
+        Retrieve the 12 on-chain approval items that a Deposit Wallet
+        (signatureType=3) must complete before trading on Polymarket.
+
+        Each item describes:
+        * ``audit_name`` — human-readable label (e.g. 'pUSD → CTF Exchange (V2)')
+        * ``audit_item_code`` — short code identifier
+        * ``token_contract`` — ERC-20 or ERC-1155 contract address
+        * ``spender_contract`` — the operator / spender to approve
+        * ``method`` — ``'approve'`` (ERC-20) or ``'setApprovalForAll'`` (ERC-1155)
+        * ``check_method`` — ``'allowance'`` or ``'isApprovedForAll'``
+
+        Returns:
+            Dict with ``total`` (always 12) and ``items`` (list of audit
+            item objects).
+        """
+        return self._request("GET", "/wallet/audit-items")
 
     # ============================================================
     # Trading Operations
@@ -1422,91 +1475,85 @@ class AionMarketClient:
     # Fee Charging Operations
     # ============================================================
 
-    def charge_polymarket_fee(self, order_hash_id: str) -> Dict[str, Any]:
+    def charge_polymarket_fee(
+        self,
+        amount: str,
+        safe_address: str,
+    ) -> Dict[str, Any]:
         """
         Charge the platform trading fee for a Polymarket order.
 
-        Platform automatically charges 1% of order notional value
-        (orderSize × price) via Safe AllowanceModule on Polygon.
-        The fee is denominated in pUSD.
+        Backed by the same Fireblocks Safe AllowanceModule transfer logic
+        as ``/order/signTransferFrom``. The caller decides the fee amount
+        (typically 1% of order notional) and the user's Safe wallet
+        address; the backend simply executes the transfer.
 
         Prerequisites:
-          - User must have enabled AllowanceModule on their Safe wallet
-          - Fireblocks platform address must be added as delegate
-                    - Sufficient pUSD allowance must be set on the module
-
-        This is typically called automatically after order placement,
-        but can be triggered manually if the automatic cron missed it.
+          - User has enabled AllowanceModule on their Safe wallet
+          - Fireblocks platform address is added as delegate
+          - Sufficient pUSD allowance is set on the AllowanceModule
 
         Args:
-            order_hash_id: Polymarket CLOB order hash (e.g. '0xabc123...')
+            amount: Fee amount as a decimal string in pUSD
+                (e.g. ``"0.55"``)
+            safe_address: User's Polygon Safe wallet address
+                (the funder address)
 
         Returns:
-            Dict with transactionId, feeAmount, and status ('PENDING')
+            Raw Fireblocks ``createTransaction`` response containing
+            ``data.id`` and ``data.status``.
 
         Raises:
-            ApiError: If order not found, user Safe not configured,
-                or Fireblocks transfer fails
+            ApiError: If parameters are invalid, allowance is insufficient,
+                or Fireblocks rejects the transaction.
         """
         return self._request(
             "POST",
-            f"/aiagent/charge-fee/polymarket/{order_hash_id}",
+            "/aiagent/charge-fee/polymarket/trade-fee",
+            json={
+                "amount": amount,
+                "safeAddress": safe_address,
+            },
         )
 
-    def charge_kalshi_fee(self, kalshi_order_id: str) -> Dict[str, Any]:
+    def charge_kalshi_fee(
+        self,
+        amount: str,
+        from_address: str,
+    ) -> Dict[str, Any]:
         """
         Charge the platform trading fee for a Kalshi order.
 
-        Platform charges 1% of order amount via Fireblocks USDC
-        transfer on Solana. The fee is denominated in native USDC
-        (SPL Token on Solana mainnet).
+        Backed by the same Fireblocks Raw signing + SPL ``transferChecked``
+        logic as ``/kalshi/charge-fee``. The caller decides the fee amount
+        (typically 1% of order amount) and the user's Solana wallet
+        address; the backend signs and broadcasts the SPL transfer from
+        the user's USDC ATA to the platform fee ATA.
 
         Prerequisites:
-          - User's Solana wallet must hold sufficient USDC
-          - User must have granted token approval to platform vault
-
-        This should be called after a successful kalshi_submit() execution.
+          - User's Solana wallet holds sufficient USDC
+          - User has granted SPL token approval (delegate) to the platform
+            Fireblocks SOL address
 
         Args:
-            kalshi_order_id: Kalshi order transaction signature
-                (returned as txSignature from kalshi_submit())
+            amount: Fee amount as a decimal string in USDC
+                (e.g. ``"0.10"``)
+            from_address: User's Solana wallet address (USDC ATA owner)
 
         Returns:
-            Dict with transactionId, feeAmount, and status ('PENDING')
+            Dict with Fireblocks transaction id, broadcast Solana signature,
+            sender / receiver addresses and amount.
 
         Raises:
-            ApiError: If order not found, Solana address missing,
-                or Fireblocks transfer fails
+            ApiError: If parameters are invalid, allowance is missing,
+                or Fireblocks Raw signing is blocked / fails.
         """
         return self._request(
             "POST",
-            f"/aiagent/charge-fee/kalshi/{kalshi_order_id}",
-        )
-
-    def get_fee_status(
-        self,
-        order_id: str,
-        venue: str = "polymarket",
-    ) -> Dict[str, Any]:
-        """
-        Query the fee charging status for an order.
-
-        Args:
-            order_id: Order identifier (Polymarket orderHashId or
-                Kalshi txSignature)
-            venue: 'polymarket' or 'kalshi'
-
-        Returns:
-            Dict with:
-              - orderHashId: the order identifier
-              - feeAmount: charged amount (null if not yet charged)
-              - status: 'pending' | 'charged' | 'failed' | 'unknown'
-              - errorReason: error description (if failed)
-        """
-        params: Dict[str, Any] = {"venue": venue}
-        return self._request(
-            "GET",
-            f"/aiagent/charge-fee/status/{order_id}",
-            params=params,
+            "/aiagent/charge-fee/kalshi/trade-fee",
+            json={
+                "amount": amount,
+                "fromAddress": from_address,
+            },
         )
 

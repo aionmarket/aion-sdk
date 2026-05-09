@@ -96,8 +96,15 @@ context = client.get_market_context(market_id)
 if context.get("warnings"):
     print(f"Warnings: {context['warnings']}")
 
-# Trade only if you have a thesis (Polymarket V2 — pUSD settlement)
-# NOTE: V2 settles in pUSD. Wallet must hold pUSD before trading.
+# Trade only if you have a thesis.
+#
+# All four Polymarket signature types are accepted by the SDK:
+#   0 = EOA  |  1 = Polymarket Proxy  |  2 = Gnosis Safe  |  3 = Deposit Wallet (POLY_1271)
+#
+# The backend infers Polymarket order version (V1 vs V2) from the signed payload:
+#   - Include `timestamp` / `metadata` / `builder` for V2 orders (pUSD settlement).
+#   - Omit those fields for V1 orders (USDC settlement).
+# V2 is a contract / order-format upgrade — it is NOT tied to a specific wallet type.
 result = client.trade({
     "venue": "polymarket",
     "isLimitOrder": True,
@@ -118,13 +125,14 @@ result = client.trade({
         "takerAmount": "10000000",
         "side": "BUY",
         "expiration": "0",
-        # V2 order fields (signatureType=3 with non-zero timestamp)
+        # V2 order fields — include only when signing a V2 (pUSD) order.
+        # Omit for V1 (USDC) orders.
         "timestamp": "1714400000",
         "metadata": "0x0000000000000000000000000000000000000000000000000000000000000000",
         "builder":  "0x0000000000000000000000000000000000000000000000000000000000000000",
         "signature": "0x...",
         "salt": 599228746038,
-        "signatureType": 3,  # 3 = Deposit wallet (Polymarket V2 / POLY_1271)
+        "signatureType": 0,  # 0=EOA, 1=Proxy, 2=Safe, 3=Deposit Wallet — must match the actual wallet
     },
 })
 print(f"Order placed: {result['orderId']}")

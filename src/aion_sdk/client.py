@@ -789,13 +789,21 @@ class AionMarketClient:
 
     def check_wallet_credentials(self, wallet_address: str) -> Dict[str, Any]:
         """
-        Check if wallet credentials are registered.
+        Check whether Polymarket CLOB credentials are already registered
+        for a wallet address.
+
+        Works for all four signature types (EOA / Proxy / Safe / Deposit
+        Wallet) — the backend looks up the credential row by exact
+        ``walletAddress`` match (with a fallback for legacy Deposit-Wallet
+        rows whose stored ``signatureType`` may differ from the actual
+        on-chain wallet kind).
 
         Args:
-            wallet_address: Wallet address to check
+            wallet_address: Wallet address to check.
 
         Returns:
-            Credential check result
+            Credential check result with ``hasCredentials`` and (when
+            registered) the stored ``signatureType``.
         """
         return self._request(
             "GET",
@@ -819,10 +827,17 @@ class AionMarketClient:
             api_key: Polymarket CLOB API key
             api_secret: Polymarket CLOB API secret
             api_passphrase: Polymarket CLOB API passphrase
-            signature_type: Optional explicit signature type.
-                Use 3 for deposit wallets when registering V2 POLY_1271
-                credentials. When omitted, the backend infers the type using
-                its existing logic.
+            signature_type: Optional Polymarket signature type for the
+                wallet being registered:
+
+                * ``0`` — EOA (externally owned account)
+                * ``1`` — Polymarket Proxy
+                * ``2`` — Gnosis Safe
+                * ``3`` — Polymarket Deposit Wallet (POLY_1271)
+
+                When omitted the backend auto-detects the wallet type via
+                on-chain ``getCode`` inspection. Pass an explicit value only
+                when auto-detection is wrong or you know the type up-front.
 
         Returns:
             Registration result
@@ -928,18 +943,22 @@ class AionMarketClient:
 
     def get_wallet_audit_status(self, wallet_address: str) -> Dict[str, Any]:
         """
-        Check whether a Deposit Wallet (signatureType=3) has completed all
-        12 on-chain approvals required for Polymarket trading.
+        Check Deposit-Wallet on-chain approval status.
 
-        The backend looks up ``mk_ai_agent.audits_status`` for the agent
-        bound to the given wallet address:
+        **Only relevant for ``signatureType=3`` (Polymarket Deposit Wallet).**
+        EOA / Proxy / Gnosis Safe wallets do not require this check and the
+        endpoint will return ``auditsStatus=0`` for them — that is NOT a
+        blocker for trading.
+
+        For Deposit Wallets, the backend looks up
+        ``mk_ai_agent.audits_status`` for the agent bound to the given
+        wallet address:
 
         * ``0`` — not authorized (agent must perform 12 approvals locally)
         * ``1`` — fully authorized (ready to trade)
 
         Args:
-            wallet_address: The Polygon wallet address (Deposit Wallet)
-                to check.
+            wallet_address: The Polygon wallet address to check.
 
         Returns:
             Dict with ``walletAddress``, ``auditsStatus`` (0 or 1), and
@@ -953,8 +972,12 @@ class AionMarketClient:
 
     def get_wallet_audit_items(self) -> Dict[str, Any]:
         """
-        Retrieve the 12 on-chain approval items that a Deposit Wallet
-        (signatureType=3) must complete before trading on Polymarket.
+        Retrieve the 12 on-chain approval items required by a Polymarket
+        Deposit Wallet (``signatureType=3``) before trading.
+
+        **Only Deposit Wallets need to perform these approvals.** EOA /
+        Proxy / Gnosis Safe wallets manage their own approvals and should
+        ignore this list.
 
         Each item describes:
         * ``audit_name`` — human-readable label (e.g. 'pUSD → CTF Exchange (V2)')
@@ -976,21 +999,27 @@ class AionMarketClient:
 
     def trade(self, payload: Dict[str, Any]) -> Dict[str, Any]:
         """
-        Execute a market trade order on Polymarket (V2 only).
+        Execute a market trade order on Polymarket.
 
-        Polymarket V2 orders settle in **pUSD** (Polymarket's ERC-20 collateral
-        token, 6 decimals). The signed order MUST carry:
+        All four Polymarket signature types are accepted:
 
-        * ``signatureType=3``
-        * a non-zero ``timestamp`` (unix seconds when the order was signed)
+        * ``signatureType=0`` — EOA (externally owned account)
+        * ``signatureType=1`` — Polymarket Proxy
+        * ``signatureType=2`` — Gnosis Safe
+        * ``signatureType=3`` — Polymarket Deposit Wallet (POLY_1271)
 
-        ``metadata`` / ``builder`` are optional and default to ``bytes32(0)``
-        server-side. Wallets must hold pUSD before placing orders.
+        The backend infers Polymarket order version (V1 vs V2) from the
+        signed payload itself: orders that include ``timestamp`` /
+        ``metadata`` / ``builder`` are treated as V2 (pUSD-settled),
+        otherwise they are treated as V1 (USDC-settled). Any signature
+        type can produce a V2 order — V2 is a contract / order-format
+        upgrade, not a wallet-type requirement.
 
-        The SDK only supports Polymarket V2 pUSD-settled orders.
+        For V2 orders, ``metadata`` / ``builder`` default to ``bytes32(0)``
+        server-side when omitted. V2 wallets must hold pUSD before trading.
 
         Args:
-            payload: V2 trade order payload.
+            payload: trade order payload.
 
         Returns:
             Trade execution result with order ID and status.
@@ -1026,30 +1055,29 @@ class AionMarketClient:
             "signature",
             "salt",
             "signatureType",
-            "timestamp",
         ]
         missing_order = [k for k in required_order_fields if k not in order_payload]
         if missing_order:
             raise ValueError(
-                "trade.order missing required V2 fields: "
+                "trade.order missing required fields: "
                 + ", ".join(sorted(missing_order))
             )
 
-        # Run side / signatureType / orderType normalization first so the V2
-        # checks below see canonicalised values (e.g. signatureType="3" -> 3).
+        # Run side / signatureType / orderType normalization so the
+        # downstream backend sees canonicalised values
+        # (e.g. signatureType="3" -> 3, side="buy" -> "BUY").
         normalized_payload = self._normalize_trade_payload(payload)
         normalized_order = normalized_payload["order"]
 
-        # V2 must use signatureType=3 and a non-zero timestamp (unix seconds).
-        if normalized_order.get("signatureType") != 3:
+        # If the caller explicitly opts into V2 by supplying a timestamp,
+        # reject obviously invalid values early. Otherwise let the backend
+        # decide V1 vs V2 from the signed payload.
+        if "timestamp" in normalized_order and str(
+            normalized_order.get("timestamp") or ""
+        ).strip() in {"", "0"}:
             raise ValueError(
-                "V2 trade.order requires signatureType=3 (pUSD-collateralised order)"
-            )
-
-        if str(normalized_order.get("timestamp") or "").strip() in {"", "0"}:
-            raise ValueError(
-                "V2 trade.order requires a non-zero 'timestamp' "
-                "(unix seconds when the order was signed)"
+                "V2 trade.order 'timestamp' must be a non-zero unix-seconds value "
+                "(omit the field entirely for V1 orders)"
             )
 
         return self._request("POST", "/markets/trade", json=normalized_payload)

@@ -6,6 +6,6 @@ This module provides a simple interface for interacting with the AION Market AI 
 
 from .client import AionMarketClient, ApiError
 
-__version__ = "0.4.0"
+__version__ = "0.7.2"
 __author__ = "AION Market"
 __all__ = ["AionMarketClient", "ApiError"]

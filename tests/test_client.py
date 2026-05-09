@@ -228,7 +228,7 @@ def test_trade_payload_validation_catches_missing_nested_order_fields() -> None:
             }
         )
 
-    assert "trade.order missing required V2 fields" in str(exc.value)
+    assert "trade.order missing required fields" in str(exc.value)
 
 
 def test_trade_normalizes_side_from_enum_like_value_and_signature_type() -> None:
@@ -1574,32 +1574,37 @@ def test_trade_side_dotted_enum_string() -> None:
     assert body["order"]["side"] == "SELL"
 
 
-def test_trade_v2_missing_timestamp_raises() -> None:
-    """V2 order without timestamp should be rejected client-side."""
+def test_trade_without_timestamp_is_accepted_as_v1() -> None:
+    """Omitting `timestamp` is allowed — backend treats it as a V1 order."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
     payload = _make_v2_trade_payload()
     del payload["order"]["timestamp"]
 
-    with pytest.raises(ValueError, match="missing required V2 fields"):
+    with patch("urllib.request.urlopen", return_value=_MockResponse({"ok": True})) as mock_open:
         client.trade(payload)
+
+    body = json.loads(mock_open.call_args[0][0].data.decode("utf-8"))
+    assert "timestamp" not in body["order"]
 
 
 def test_trade_v2_zero_timestamp_raises() -> None:
-    """V2 order with explicit zero timestamp should be rejected."""
+    """If `timestamp` is supplied it must be a non-zero unix-seconds value."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
     payload = _make_v2_trade_payload(**{"order.timestamp": "0"})
 
-    with pytest.raises(ValueError, match="non-zero 'timestamp'"):
+    with pytest.raises(ValueError, match="non-zero unix-seconds"):
         client.trade(payload)
 
 
-def test_trade_v2_wrong_signature_type_raises() -> None:
-    """Only signatureType=3 is accepted (V1 / EOA / Proxy variants are rejected)."""
+def test_trade_accepts_all_signature_types() -> None:
+    """All four signature types (0=EOA, 1=Proxy, 2=Safe, 3=Deposit Wallet) are accepted."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
-    payload = _make_v2_trade_payload(**{"order.signatureType": 0})
-
-    with pytest.raises(ValueError, match="requires signatureType=3"):
-        client.trade(payload)
+    for sig_type in (0, 1, 2, 3):
+        payload = _make_v2_trade_payload(**{"order.signatureType": sig_type})
+        with patch("urllib.request.urlopen", return_value=_MockResponse({"ok": True})) as mock_open:
+            client.trade(payload)
+        body = json.loads(mock_open.call_args[0][0].data.decode("utf-8"))
+        assert body["order"]["signatureType"] == sig_type
 
 
 def test_update_settings_all_fields() -> None:

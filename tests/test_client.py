@@ -1587,13 +1587,16 @@ def test_trade_without_timestamp_is_accepted_as_v1() -> None:
     assert "timestamp" not in body["order"]
 
 
-def test_trade_v2_zero_timestamp_raises() -> None:
-    """If `timestamp` is supplied it must be a non-zero unix-seconds value."""
+def test_trade_v2_zero_timestamp_is_forwarded_silently() -> None:
+    """`timestamp` is no longer signed/validated by the SDK; passes through HTTP."""
     client = AionMarketClient(api_key="k", base_url="https://api.example.com")
     payload = _make_v2_trade_payload(**{"order.timestamp": "0"})
 
-    with pytest.raises(ValueError, match="non-zero unix-seconds"):
+    with patch("urllib.request.urlopen", return_value=_MockResponse({"ok": True})) as mock_open:
         client.trade(payload)
+
+    body = json.loads(mock_open.call_args[0][0].data.decode("utf-8"))
+    assert body["order"]["timestamp"] == "0"
 
 
 def test_trade_accepts_all_signature_types() -> None:

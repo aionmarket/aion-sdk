@@ -56,6 +56,7 @@ from __future__ import annotations
 
 import secrets
 import time
+import warnings
 from typing import Any, Dict, Optional
 
 # ---------------------------------------------------------------------------
@@ -81,12 +82,25 @@ _SIDE_BUY: int = 0
 _SIDE_SELL: int = 1
 
 #: EIP-712 domain name and version for the V2 CTF Exchange contracts.
+#: NOTE: although the contract's ERC-5267 ``eip712Domain()`` getter
+#: returns ``version="2"``, the actual ``_hashTypedDataV4`` inside the
+#: Polymarket CTF Exchange uses ``version="1"`` (see Polymarket's
+#: ``py-order-utils.builders.base_builder._get_domain_separator``). The
+#: signed digest must use the version that matches the on-chain
+#: ``DOMAIN_SEPARATOR``, i.e. ``"1"``. Using ``"2"`` produced a digest
+#: that did not match and caused the CLOB to reject every order with
+#: ``Invalid order payload``.
 _EIP712_DOMAIN_NAME: str = "Polymarket CTF Exchange"
-_EIP712_DOMAIN_VERSION: str = "2"
+_EIP712_DOMAIN_VERSION: str = "1"
 
 #: V2 Order struct field layout. Field order matters — it is part of the
-#: EIP-712 type hash. The first 12 fields match V1; the trailing three
-#: (``timestamp``, ``metadata``, ``builder``) are V2-only.
+#: EIP-712 type hash. The Polymarket CTF Exchange V2 (and Neg-Risk
+#: variants) verify a 12-field Order struct identical to V1. ``timestamp``
+#: / ``metadata`` / ``builder`` are HTTP-payload extensions used by the
+#: CLOB book; they are NOT part of the on-chain Order struct and MUST
+#: NOT be included in the EIP-712 typed data, otherwise the recovered
+#: signer will not match and the CLOB rejects the order with
+#: ``Invalid order payload``.
 _ORDER_FIELDS_V2 = [
     {"name": "salt", "type": "uint256"},
     {"name": "maker", "type": "address"},
@@ -100,9 +114,6 @@ _ORDER_FIELDS_V2 = [
     {"name": "feeRateBps", "type": "uint256"},
     {"name": "side", "type": "uint8"},
     {"name": "signatureType", "type": "uint8"},
-    {"name": "timestamp", "type": "uint256"},
-    {"name": "metadata", "type": "bytes32"},
-    {"name": "builder", "type": "bytes32"},
 ]
 
 # ---------------------------------------------------------------------------
@@ -284,14 +295,29 @@ def build_v2_signed_order(
     sig_type_int = int(signature_type)
     if sig_type_int not in (0, 1, 2, 3):
         raise ValueError("signature_type must be one of 0, 1, 2, 3")
-    metadata_hex = _normalize_bytes32(metadata, "metadata")
-    builder_hex = _normalize_bytes32(builder, "builder")
     salt_int = int(salt) if salt is not None else _generate_salt()
     if salt_int < 0:
         raise ValueError("salt must be non-negative")
-    ts_int = int(timestamp) if timestamp is not None else int(time.time())
-    if ts_int <= 0:
-        raise ValueError("timestamp must be a positive unix-seconds value")
+
+    # NOTE: ``timestamp`` / ``metadata`` / ``builder`` are still accepted
+    # as kwargs for backward compatibility with callers written against
+    # aion-sdk <= 0.10.1, but they are NOT part of the EIP-712 typed
+    # data hashed by the Polymarket CTF Exchange V2 contracts. Including
+    # them caused the recovered signer to mismatch and the CLOB to
+    # reject every V2 order with ``Invalid order payload``. We silently
+    # ignore them here so old callers keep working.
+    if (
+        timestamp is not None
+        or metadata not in (None, ZERO_BYTES32)
+        or builder not in (None, ZERO_BYTES32)
+    ):
+        warnings.warn(
+            "build_v2_signed_order: timestamp/metadata/builder are not part "
+            "of the Polymarket CTF Exchange V2 EIP-712 Order struct and are "
+            "ignored. Remove them from your call site.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     message: Dict[str, Any] = {
         "salt": salt_int,
@@ -306,9 +332,6 @@ def build_v2_signed_order(
         "feeRateBps": fee_rate,
         "side": side_int,
         "signatureType": sig_type_int,
-        "timestamp": ts_int,
-        "metadata": metadata_hex,
-        "builder": builder_hex,
     }
 
     typed_data = {
@@ -351,9 +374,6 @@ def build_v2_signed_order(
         "nonce": str(nonce_int),
         "feeRateBps": str(fee_rate),
         "signatureType": sig_type_int,
-        "timestamp": str(ts_int),
-        "metadata": metadata_hex,
-        "builder": builder_hex,
         "signature": signature_hex,
     }
 

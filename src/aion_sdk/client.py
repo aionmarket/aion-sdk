@@ -1016,14 +1016,19 @@ class AionMarketClient:
         * ``signatureType=3`` — Polymarket Deposit Wallet (POLY_1271)
 
         The backend infers Polymarket order version (V1 vs V2) from the
-        signed payload itself: orders that include ``timestamp`` /
-        ``metadata`` / ``builder`` are treated as V2 (pUSD-settled),
-        otherwise they are treated as V1 (USDC-settled). Any signature
-        type can produce a V2 order — V2 is a contract / order-format
-        upgrade, not a wallet-type requirement.
+        market itself; the ``order`` payload always uses the same 12
+        EIP-712 fields (``salt, maker, signer, taker, tokenId,
+        makerAmount, takerAmount, expiration, nonce, feeRateBps, side,
+        signatureType``) regardless of V1/V2. Any signature type can
+        produce a V2 order — V2 is a contract / settlement-currency
+        upgrade (pUSD vs USDC), not a wallet-type requirement.
 
-        For V2 orders, ``metadata`` / ``builder`` default to ``bytes32(0)``
-        server-side when omitted. V2 wallets must hold pUSD before trading.
+        Note: aion-sdk ≤ 0.10.1 incorrectly added ``timestamp`` /
+        ``metadata`` / ``builder`` to the EIP-712 typed data which made
+        every V2 order rejected by the CLOB with ``Invalid order
+        payload``. From 0.10.2 these fields are no longer signed; they
+        may still be present in the outgoing HTTP payload but are
+        ignored by both the SDK and the backend.
 
         Automatic fee charging:
             When ``auto_charge_fee`` is True (default) and the trade
@@ -1130,17 +1135,6 @@ class AionMarketClient:
         # (e.g. signatureType="3" -> 3, side="buy" -> "BUY").
         normalized_payload = self._normalize_trade_payload(payload)
         normalized_order = normalized_payload["order"]
-
-        # If the caller explicitly opts into V2 by supplying a timestamp,
-        # reject obviously invalid values early. Otherwise let the backend
-        # decide V1 vs V2 from the signed payload.
-        if "timestamp" in normalized_order and str(
-            normalized_order.get("timestamp") or ""
-        ).strip() in {"", "0"}:
-            raise ValueError(
-                "V2 trade.order 'timestamp' must be a non-zero unix-seconds value "
-                "(omit the field entirely for V1 orders)"
-            )
 
         # Compute fee_amount once on the client side so the backend can
         # persist it onto mk_order.fee_amount even when the upstream

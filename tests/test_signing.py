@@ -32,7 +32,6 @@ def _base_kwargs(**overrides):
         maker_amount="5500000",
         taker_amount="10000000",
         side="BUY",
-        timestamp=1714400000,
         salt=12345,
     )
     kwargs.update(overrides)
@@ -43,6 +42,9 @@ def test_build_v2_signed_order_returns_complete_payload():
     order = build_v2_signed_order(**_base_kwargs())
 
     # Schema check — every field the backend expects must be present.
+    # Polymarket CTF Exchange V2 verifies a 12-field Order struct (same
+    # as V1); timestamp/metadata/builder are NOT part of the EIP-712
+    # typed data and are no longer emitted by build_v2_signed_order.
     expected_keys = {
         "salt",
         "maker",
@@ -56,9 +58,6 @@ def test_build_v2_signed_order_returns_complete_payload():
         "nonce",
         "feeRateBps",
         "signatureType",
-        "timestamp",
-        "metadata",
-        "builder",
         "signature",
     }
     assert set(order.keys()) == expected_keys
@@ -68,9 +67,6 @@ def test_build_v2_signed_order_returns_complete_payload():
     assert order["taker"] == ZERO_ADDRESS
     assert order["side"] == "BUY"
     assert order["signatureType"] == 0
-    assert order["timestamp"] == "1714400000"
-    assert order["metadata"] == ZERO_BYTES32
-    assert order["builder"] == ZERO_BYTES32
     assert order["signature"].startswith("0x")
     # 65-byte ECDSA signature -> 130 hex chars + "0x"
     assert len(order["signature"]) == 132
@@ -117,15 +113,12 @@ def test_signature_recovers_to_signer_address():
                 {"name": "feeRateBps", "type": "uint256"},
                 {"name": "side", "type": "uint8"},
                 {"name": "signatureType", "type": "uint8"},
-                {"name": "timestamp", "type": "uint256"},
-                {"name": "metadata", "type": "bytes32"},
-                {"name": "builder", "type": "bytes32"},
             ],
         },
         "primaryType": "Order",
         "domain": {
             "name": "Polymarket CTF Exchange",
-            "version": "2",
+            "version": "1",
             "chainId": 137,
             "verifyingContract": V2_CTF_EXCHANGE,
         },
@@ -142,9 +135,6 @@ def test_signature_recovers_to_signer_address():
             "feeRateBps": int(order["feeRateBps"]),
             "side": 0 if order["side"] == "BUY" else 1,
             "signatureType": order["signatureType"],
-            "timestamp": int(order["timestamp"]),
-            "metadata": order["metadata"],
-            "builder": order["builder"],
         },
     }
 
@@ -183,6 +173,10 @@ def test_invalid_address_raises():
         build_v2_signed_order(**_base_kwargs(maker="not-an-address"))
 
 
-def test_zero_timestamp_raises():
-    with pytest.raises(ValueError, match="timestamp"):
-        build_v2_signed_order(**_base_kwargs(timestamp=0))
+def test_legacy_v2_extension_kwargs_are_ignored_with_warning():
+    """timestamp/metadata/builder kwargs are accepted but ignored (deprecated)."""
+    with pytest.warns(DeprecationWarning, match="timestamp/metadata/builder"):
+        order = build_v2_signed_order(**_base_kwargs(timestamp=1714400000))
+    assert "timestamp" not in order
+    assert "metadata" not in order
+    assert "builder" not in order

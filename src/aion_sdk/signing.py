@@ -215,7 +215,8 @@ def build_v2_signed_order(
     maker_amount: str,
     taker_amount: str,
     side: Any,
-    verifying_contract: str = V2_CTF_EXCHANGE,
+    verifying_contract: Optional[str] = None,
+    neg_risk: Optional[bool] = None,
     signer: Optional[str] = None,
     taker: str = ZERO_ADDRESS,
     expiration: str = "0",
@@ -229,60 +230,180 @@ def build_v2_signed_order(
     chain_id: int = POLYGON_CHAIN_ID,
 ) -> Dict[str, Any]:
     """
-    Build and sign a Polymarket V2 order.
+    Build and sign a Polymarket V2 order (12-field EIP-712 Order struct,
+    domain ``name="Polymarket CTF Exchange"`` / ``version="1"``).
 
     Returns a dict in the exact shape that
     :meth:`aion_sdk.AionMarketClient.trade` expects under the ``order``
     key. The dict is JSON-serialisable.
 
-    All four ``signature_type`` values are accepted (0=EOA, 1=Polymarket
-    Proxy, 2=Gnosis Safe, 3=Deposit Wallet). The ``private_key`` must be
-    able to produce a valid signature for the ``signer`` field — for
-    smart-contract wallets this is the controlling EOA.
+    All four ``signature_type`` values are accepted:
+
+    * ``0`` — EOA: ``maker`` and ``signer`` are the same EOA address;
+      ``signer`` may be omitted.
+    * ``1`` — Polymarket Proxy: ``maker`` is the proxy contract address;
+      ``signer`` MUST be the controlling EOA.
+    * ``2`` — Gnosis Safe: ``maker`` is the Safe contract address;
+      ``signer`` MUST be a Safe owner EOA.
+    * ``3`` — Deposit Wallet (POLY_1271): ``maker`` is the deposit
+      wallet contract address (e.g. ``0xC4378...``); ``signer`` MUST be
+      the controlling EOA.
+
+    For Polymarket "neg-risk" markets, the V2 verifying contract is
+    different from vanilla CTF Exchange. Either:
+
+    * pass ``neg_risk=True`` (recommended) to let the SDK pick
+      :data:`V2_NEG_RISK_EXCHANGE_A` automatically, or
+    * pass an explicit ``verifying_contract=...``.
+
+    Picking the wrong exchange (vanilla vs neg-risk) is the #1 cause of
+    ``Invalid order payload`` rejections from the CLOB.
 
     Args:
         private_key: 0x-prefixed hex private key used to ECDSA-sign the
-            EIP-712 hash. Never logged.
-        maker: Wallet address that owns the funds.
+            EIP-712 hash. Never logged. The address derived from this
+            key MUST equal ``signer``.
+        maker: Wallet that owns the funds. For sigType=0 this is the
+            EOA itself; for sigType=1/2/3 this is the smart-contract
+            wallet.
         token_id: Polymarket CTF token id (decimal string).
-        maker_amount: Amount of the maker asset in atomic units (string).
-        taker_amount: Amount of the taker asset in atomic units (string).
+        maker_amount: Maker asset amount in atomic units (6-decimal pUSD
+            for V2 markets), as a string.
+        taker_amount: Taker asset amount in atomic units, as a string.
         side: ``"BUY"``/``"SELL"`` (case-insensitive) or ``0``/``1``.
-        verifying_contract: V2 Exchange contract address. Defaults to
-            :data:`V2_CTF_EXCHANGE`. For neg-risk markets pass
-            :data:`V2_NEG_RISK_EXCHANGE_A` or
-            :data:`V2_NEG_RISK_EXCHANGE_B` as appropriate.
-        signer: Address that produced the signature. Defaults to
-            ``maker``. For Proxy / Safe / Deposit Wallet, ``signer`` is
-            the controlling EOA while ``maker`` is the smart contract.
+        verifying_contract: V2 Exchange contract address. Mutually
+            exclusive with ``neg_risk``. Defaults to
+            :data:`V2_CTF_EXCHANGE` if neither is supplied.
+        neg_risk: When ``True``, signs against
+            :data:`V2_NEG_RISK_EXCHANGE_A`; when ``False`` (or unset),
+            signs against :data:`V2_CTF_EXCHANGE`. Determine this from
+            the market metadata's ``neg_risk`` field (returned by
+            Polymarket gamma-api / our market list endpoint).
+        signer: Address that produced the signature. REQUIRED when
+            ``signature_type != 0``; for sigType=0 it defaults to
+            ``maker``. Always the controlling EOA, never the smart
+            contract.
         taker: Specific counter-party. ``ZERO_ADDRESS`` (default) means
             "any taker".
         expiration: Unix-seconds expiration. ``"0"`` (default) = never.
-        nonce: On-chain nonce for cancellation. ``"0"`` (default) is fine
-            unless you batch-cancel.
+        nonce: On-chain nonce for cancellation. ``"0"`` is fine unless
+            you batch-cancel.
         fee_rate_bps: Maker fee in basis points. ``"0"`` (default) =
             inherit market default.
         signature_type: 0=EOA, 1=Proxy, 2=Safe, 3=Deposit Wallet.
-        timestamp: Unix-seconds when the order was signed. Defaults to
-            ``int(time.time())``.
-        metadata: 0x-prefixed 32-byte tag. Defaults to zero.
-        builder: 0x-prefixed 32-byte builder tag. Defaults to zero.
+        timestamp: DEPRECATED. Ignored \u2014 not part of the on-chain Order
+            struct. Kept for back-compat with aion-sdk \u2264 0.10.1 callers.
+        metadata: DEPRECATED. Ignored.
+        builder: DEPRECATED. Ignored.
         salt: Optional explicit salt. Defaults to a fresh 96-bit random.
         chain_id: EIP-712 chain id. Defaults to Polygon mainnet (137).
 
     Returns:
-        Dict with all V2 ``order`` fields and the hex-encoded
+        Dict with the 12 V2 ``order`` fields plus the hex-encoded
         ``signature``, ready to be passed to ``client.trade(...)``.
 
     Raises:
         SigningDependencyError: If ``eth-account`` is not installed.
-        ValueError: If any input is malformed.
+        ValueError: If any input is malformed, ``signer`` is missing for
+            sigType != 0, or ``signer`` does not match the EOA derived
+            from ``private_key``.
+
+    Example (Deposit Wallet on a neg-risk market):
+
+    >>> from aion_sdk.signing import build_v2_signed_order
+    >>> signed = build_v2_signed_order(
+    ...     private_key=EOA_PK,
+    ...     maker="0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185",  # deposit wallet
+    ...     signer=EOA_ADDRESS,                                   # controlling EOA
+    ...     signature_type=3,
+    ...     neg_risk=True,
+    ...     token_id="55555",
+    ...     maker_amount="5500000",
+    ...     taker_amount="10000000",
+    ...     side="BUY",
+    ... )
     """
     Account, encode_typed_data = _require_eth_account()
 
+    # ------------------------------------------------------------------
+    # Resolve verifying_contract
+    # ------------------------------------------------------------------
+    # Polymarket has two V2 exchange families on Polygon:
+    #   * Vanilla CTF Exchange     -> 0xE111180000d2663C0091e4f400237545B87B996B
+    #   * Neg-Risk CTF Exchange A  -> 0xe2222d279d744050d28e00520010520000310F59
+    # The signed digest must use the same exchange the market settles on.
+    # Signing a neg-risk market against the vanilla exchange (or vice
+    # versa) produces a digest the on-chain Exchange.verifyOrder cannot
+    # recover, and the CLOB rejects with ``Invalid order payload``.
+    if verifying_contract is None and neg_risk is None:
+        # Backward compatible default: vanilla CTF Exchange.
+        verifying_contract = V2_CTF_EXCHANGE
+    elif verifying_contract is None:
+        verifying_contract = (
+            V2_NEG_RISK_EXCHANGE_A if neg_risk else V2_CTF_EXCHANGE
+        )
+    elif neg_risk is not None:
+        # Both supplied — sanity-check they agree, otherwise the caller
+        # almost certainly has a mismatched market/contract pair.
+        expected = V2_NEG_RISK_EXCHANGE_A if neg_risk else V2_CTF_EXCHANGE
+        if verifying_contract.lower() != expected.lower():
+            raise ValueError(
+                f"verifying_contract={verifying_contract!r} does not match "
+                f"neg_risk={neg_risk!r} (expected {expected}). Pass only one "
+                f"of the two, or make sure they agree."
+            )
+
+    # ------------------------------------------------------------------
     # Normalise / validate inputs.
+    # ------------------------------------------------------------------
     maker_addr = _normalize_address(maker, "maker")
-    signer_addr = _normalize_address(signer or maker, "signer")
+    sig_type_int = int(signature_type)
+    if sig_type_int not in (0, 1, 2, 3):
+        raise ValueError("signature_type must be one of 0, 1, 2, 3")
+
+    # For sigType in {1,2,3} (Polymarket Proxy / Gnosis Safe / Deposit
+    # Wallet) ``maker`` is the smart-contract wallet that holds the
+    # funds and ``signer`` MUST be the controlling EOA whose private key
+    # produced the signature. Defaulting ``signer = maker`` here would
+    # generate a signature that recovers to the EOA but be advertised as
+    # signed-by-the-contract — the CLOB then rejects with
+    # ``Invalid order payload`` (the cause of every reported deposit
+    # wallet trade failure prior to aion-sdk 0.10.3). Force callers to
+    # be explicit so the trap goes away.
+    if signer is None:
+        if sig_type_int != 0:
+            raise ValueError(
+                "signer is required when signature_type != 0. For Polymarket "
+                "Proxy (1) / Gnosis Safe (2) / Deposit Wallet (3), `maker` is "
+                "the smart-contract wallet address while `signer` must be the "
+                "controlling EOA whose private_key is signing this order."
+            )
+        signer_addr = maker_addr
+    else:
+        signer_addr = _normalize_address(signer, "signer")
+
+    # Cross-check: the signature is produced by ``private_key``. Recover
+    # that EOA and ensure it matches ``signer`` — catches the very
+    # common ``private_key from EOA-A but signer=EOA-B`` mistake.
+    pk_eoa = Account.from_key(private_key).address
+    if pk_eoa.lower() != signer_addr.lower():
+        raise ValueError(
+            f"signer ({signer_addr}) does not match the EOA derived from "
+            f"private_key ({pk_eoa}). For Polymarket Proxy/Safe/Deposit "
+            f"wallets, `signer` must be the controlling EOA, NOT the wallet "
+            f"contract address."
+        )
+
+    # For sigType=0 (EOA), maker MUST equal signer (= the EOA).
+    if sig_type_int == 0 and maker_addr.lower() != signer_addr.lower():
+        raise ValueError(
+            f"For signature_type=0 (EOA), maker and signer must be the same "
+            f"address (the EOA itself). Got maker={maker_addr}, "
+            f"signer={signer_addr}. If your wallet is a smart contract, set "
+            f"signature_type to 1 (Polymarket Proxy), 2 (Gnosis Safe), or 3 "
+            f"(Deposit Wallet) and pass signer=<controlling EOA>."
+        )
+
     taker_addr = _normalize_address(taker, "taker")
     verifying = _normalize_address(verifying_contract, "verifying_contract")
     token_id_int = _to_uint(token_id, "token_id")
@@ -292,9 +413,6 @@ def build_v2_signed_order(
     nonce_int = _to_uint(nonce, "nonce")
     fee_rate = _to_uint(fee_rate_bps, "fee_rate_bps")
     side_int = _normalize_side(side)
-    sig_type_int = int(signature_type)
-    if sig_type_int not in (0, 1, 2, 3):
-        raise ValueError("signature_type must be one of 0, 1, 2, 3")
     salt_int = int(salt) if salt is not None else _generate_salt()
     if salt_int < 0:
         raise ValueError("salt must be non-negative")

@@ -144,9 +144,55 @@ def test_signature_recovers_to_signer_address():
 
 
 def test_supports_all_signature_types():
-    for sig_type in (0, 1, 2, 3):
-        order = build_v2_signed_order(**_base_kwargs(signature_type=sig_type))
+    # sigType=0 (EOA): signer defaults to maker (= the EOA itself).
+    order0 = build_v2_signed_order(**_base_kwargs(signature_type=0))
+    assert order0["signatureType"] == 0
+    # sigType in {1,2,3}: maker is the smart-contract wallet, signer must be
+    # the controlling EOA (the address derived from private_key).
+    deposit_wallet = "0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185"
+    for sig_type in (1, 2, 3):
+        order = build_v2_signed_order(
+            **_base_kwargs(
+                signature_type=sig_type,
+                maker=deposit_wallet,
+                signer=_TEST_ADDRESS,
+            )
+        )
         assert order["signatureType"] == sig_type
+        assert order["maker"] == deposit_wallet
+        assert order["signer"] == _TEST_ADDRESS
+
+
+def test_smart_contract_wallet_requires_explicit_signer():
+    """sigType=1/2/3 must reject the call when signer is omitted."""
+    deposit_wallet = "0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185"
+    for sig_type in (1, 2, 3):
+        with pytest.raises(ValueError, match="signer is required"):
+            build_v2_signed_order(
+                **_base_kwargs(signature_type=sig_type, maker=deposit_wallet)
+            )
+
+
+def test_signer_must_match_private_key_eoa():
+    """Detect the common ``private_key from EOA-A but signer=EOA-B`` mistake."""
+    other_eoa = "0x000000000000000000000000000000000000dEaD"
+    with pytest.raises(ValueError, match="does not match the EOA derived from"):
+        build_v2_signed_order(
+            **_base_kwargs(
+                signature_type=3,
+                maker="0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185",
+                signer=other_eoa,
+            )
+        )
+
+
+def test_eoa_sigtype_rejects_mismatched_maker_signer():
+    """sigType=0 must reject when maker != signer (would be an EOA-vs-contract trap)."""
+    other = "0x000000000000000000000000000000000000dEaD"
+    with pytest.raises(ValueError, match="signature_type=0"):
+        build_v2_signed_order(
+            **_base_kwargs(signature_type=0, maker=other, signer=_TEST_ADDRESS)
+        )
 
 
 def test_supports_neg_risk_exchange():
@@ -156,6 +202,32 @@ def test_supports_neg_risk_exchange():
     # Different verifying contract must produce a different signature.
     baseline = build_v2_signed_order(**_base_kwargs())
     assert order["signature"] != baseline["signature"]
+
+
+def test_neg_risk_flag_picks_correct_verifying_contract():
+    """neg_risk=True is equivalent to passing V2_NEG_RISK_EXCHANGE_A."""
+    a = build_v2_signed_order(**_base_kwargs(neg_risk=True))
+    b = build_v2_signed_order(
+        **_base_kwargs(verifying_contract=V2_NEG_RISK_EXCHANGE_A)
+    )
+    assert a["signature"] == b["signature"]
+
+
+def test_neg_risk_default_is_vanilla_ctf_exchange():
+    """neg_risk=False is equivalent to V2_CTF_EXCHANGE (the default)."""
+    a = build_v2_signed_order(**_base_kwargs(neg_risk=False))
+    b = build_v2_signed_order(**_base_kwargs())
+    assert a["signature"] == b["signature"]
+
+
+def test_neg_risk_and_verifying_contract_must_agree():
+    """Catch the foot-gun where caller passes both and they conflict."""
+    with pytest.raises(ValueError, match="does not match"):
+        build_v2_signed_order(
+            **_base_kwargs(
+                neg_risk=True, verifying_contract="0xE111180000d2663C0091e4f400237545B87B996B"
+            )
+        )
 
 
 def test_sell_side_is_normalized():

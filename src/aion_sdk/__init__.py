@@ -6,6 +6,16 @@ This module provides a simple interface for interacting with the AION Market AI 
 
 from .client import AionMarketClient, ApiError
 
-__version__ = "0.7.2"
+# Polymarket V2 signing helpers live in an optional submodule so that the
+# core SDK keeps zero runtime dependencies. Users who need V2 signing
+# install the extra explicitly:  ``pip install 'aion-sdk[signing]'``.
+# Importing the submodule lazily keeps ``import aion_sdk`` working even
+# when ``eth-account`` is not present.
+try:  # pragma: no cover - exercised only when eth-account is installed
+    from .signing import build_v2_signed_order  # noqa: F401
+except ImportError:  # pragma: no cover
+    build_v2_signed_order = None  # type: ignore[assignment]
+
+__version__ = "0.7.3"
 __author__ = "AION Market"
-__all__ = ["AionMarketClient", "ApiError"]
+__all__ = ["AionMarketClient", "ApiError", "build_v2_signed_order"]

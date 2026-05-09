@@ -6,3 +6,7 @@ black>=23.0
 isort>=5.12
 mypy>=1.0
 flake8>=6.0
+eth-account>=0.10.0
+
+[signing]
+eth-account>=0.10.0

@@ -3,6 +3,7 @@ README.md
 pyproject.toml
 src/aion_sdk/__init__.py
 src/aion_sdk/client.py
+src/aion_sdk/signing.py
 src/aion_sdk.egg-info/PKG-INFO
 src/aion_sdk.egg-info/SOURCES.txt
 src/aion_sdk.egg-info/dependency_links.txt
@@ -10,3 +11,4 @@ src/aion_sdk.egg-info/requires.txt
 src/aion_sdk.egg-info/top_level.txt
 tests/test_aiagent_contract.py
 tests/test_client.py
+tests/test_signing.py

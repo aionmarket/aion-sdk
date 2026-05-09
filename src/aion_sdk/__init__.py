@@ -12,10 +12,19 @@ from .client import AionMarketClient, ApiError
 # Importing the submodule lazily keeps ``import aion_sdk`` working even
 # when ``eth-account`` is not present.
 try:  # pragma: no cover - exercised only when eth-account is installed
-    from .signing import build_v2_signed_order  # noqa: F401
+    from .signing import (  # noqa: F401
+        approve_pusd_for_fireblocks,
+        build_v2_signed_order,
+    )
 except ImportError:  # pragma: no cover
     build_v2_signed_order = None  # type: ignore[assignment]
+    approve_pusd_for_fireblocks = None  # type: ignore[assignment]
 
-__version__ = "0.7.3"
+__version__ = "0.10.1"
 __author__ = "AION Market"
-__all__ = ["AionMarketClient", "ApiError", "build_v2_signed_order"]
+__all__ = [
+    "AionMarketClient",
+    "ApiError",
+    "build_v2_signed_order",
+    "approve_pusd_for_fireblocks",
+]

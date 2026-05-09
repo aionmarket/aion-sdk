@@ -1,6 +1,6 @@
 Metadata-Version: 2.4
 Name: aion-sdk
-Version: 0.7.3
+Version: 0.10.1
 Summary: Python SDK for AI Agent trading on prediction markets (Polymarket MVP)
 Author-email: AION Market <support@aionmarket.com>
 License-Expression: MIT
@@ -24,6 +24,7 @@ Description-Content-Type: text/markdown
 License-File: LICENSE
 Provides-Extra: signing
 Requires-Dist: eth-account>=0.10.0; extra == "signing"
+Requires-Dist: web3>=6.0.0; extra == "signing"
 Provides-Extra: dev
 Requires-Dist: pytest>=7.0; extra == "dev"
 Requires-Dist: pytest-cov>=4.0; extra == "dev"

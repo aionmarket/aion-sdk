@@ -20,7 +20,7 @@ except ImportError:  # pragma: no cover
     build_v2_signed_order = None  # type: ignore[assignment]
     approve_pusd_for_fireblocks = None  # type: ignore[assignment]
 
-__version__ = "0.10.3"
+__version__ = "0.10.7"
 __author__ = "AION Market"
 __all__ = [
     "AionMarketClient",

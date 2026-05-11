@@ -157,21 +157,65 @@ print(f"Order placed: {result['orderId']}")
 
 ## Wallet Setup
 
-Register your Polymarket CLOB credentials to enable real trading:
+Register your Polymarket CLOB credentials to enable real trading.
+
+### ⚠️ Always resolve the trading wallet BEFORE registering credentials
+
+A user-supplied private key gives you the **EOA** (`Account.from_key(pk).address`).
+On Polymarket, the EOA is **not always** the address that holds funds and
+trades. New Polymarket accounts are deployed as **Deposit Wallets**
+(ERC-1967 proxies, signature type `3` / `POLY_1271`) owned by the EOA —
+orders signed as the bare EOA will fail with `Invalid order payload`
+against those accounts. Reference: <https://docs.polymarket.com/trading/deposit-wallets>.
+
+Use the SDK helper to query Polymarket's public profile API and pick the
+correct wallet:
+
+```python
+from eth_account import Account
+from aion_sdk import AionMarketClient
+
+eoa = Account.from_key(private_key).address
+info = AionMarketClient.resolve_polymarket_wallet(eoa)
+
+trading_wallet = info["tradingWallet"]     # use as order.maker + order.signer
+signature_type = info["signatureType"]     # 3 = deposit wallet, 0 = bare EOA
+
+print(f"EOA:            {eoa}")
+print(f"Trading wallet: {trading_wallet} (deposit={info['isDepositWallet']})")
+```
+
+Then register **the trading wallet**, never the bare EOA when a deposit
+wallet exists:
 
 ```python
 client = AionMarketClient()
 
-# Check if already registered
-check = client.check_wallet_credentials("0x1234...")
+check = client.check_wallet_credentials(trading_wallet)
 if not check["hasCredentials"]:
     client.register_wallet_credentials(
-        wallet_address="0x1234...",
+        wallet_address=trading_wallet,
         api_key="polymarket-api-key",
         api_secret="polymarket-api-secret",
-        api_passphrase="polymarket-passphrase"
+        api_passphrase="polymarket-passphrase",
+        signature_type=signature_type,   # MUST be 3 for deposit wallets
     )
 ```
+
+> Deposit wallets (`signatureType=3`) need 12 on-chain approvals before
+> the first order. Call `client.get_wallet_audit_status(trading_wallet)`
+> and complete `get_wallet_audit_items()` once. EOA wallets
+> (`signatureType=0`) skip this step.
+
+### Trading rule: do NOT bypass aion-sdk
+
+All Polymarket order placement, cancellation, and balance/allowance
+updates MUST go through this SDK (or the AION Market HTTP API directly).
+Do **not** call `py-clob-client`, `py-clob-client-v2`, or
+`@polymarket/clob-client-v2` to submit orders yourself — the AION
+backend records fees, risk limits, and execution metadata that those
+direct paths skip. Sending orders directly to Polymarket from an agent
+violates the platform terms and breaks per-agent commission accounting.
 
 ---
 

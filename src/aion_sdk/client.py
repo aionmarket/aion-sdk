@@ -90,6 +90,185 @@ class AionMarketClient:
         """
         self.api_key = api_key
 
+    # ------------------------------------------------------------
+    # Polymarket wallet resolution (CRITICAL — do not skip)
+    # ------------------------------------------------------------
+    @staticmethod
+    def resolve_polymarket_wallet(
+        eoa_address: str,
+        timeout: int = 10,
+    ) -> Dict[str, Any]:
+        """
+        Decide which Polymarket wallet the agent should actually use.
+
+        Polymarket has TWO classes of accounts that share a single signing
+        EOA:
+
+        * **Legacy accounts** (created before the deposit-wallet rollout)
+          trade directly from their EOA (``signatureType=0``) OR from a
+          Polymarket Proxy / Gnosis Safe deployed under that EOA
+          (``signatureType=1`` / ``2``).
+        * **New accounts** registered through the current onboarding flow
+          get a **Deposit Wallet** automatically deployed for them. The
+          on-chain order ``maker`` and ``signer`` MUST both be the
+          deposit-wallet address — orders signed as the raw EOA are
+          rejected by ``POLY_1271`` validation. See
+          https://docs.polymarket.com/trading/deposit-wallets
+
+        Calling Polymarket's public profile API is the cheapest reliable
+        way to tell the two apart::
+
+            GET https://polymarket.com/api/profile/userData?address=<EOA>
+
+        * If the user has a Polymarket account, the response contains
+          ``proxyWallet`` — the address Polymarket itself treats as the
+          trading wallet for that EOA (deposit wallet or legacy proxy).
+        * If there is no Polymarket account yet, the response is
+          ``null`` and the agent should treat the bare EOA as the
+          trading wallet (``signatureType=0``).
+
+        This helper does NOT do any signing — it just answers the
+        question "what address should I register with
+        ``register_wallet_credentials()`` and use as the order
+        ``maker``?".
+
+        Args:
+            eoa_address: The EOA derived from the user's private key
+                (``Account.from_key(private_key).address``). Never pass
+                a raw private key.
+            timeout: HTTP timeout in seconds for the Polymarket call.
+
+        Returns:
+            A dict with the following keys::
+
+                {
+                    "eoa":          "0x...",        # always echoed back
+                    "tradingWallet":"0x...",        # use this as maker / register this
+                    "isDepositWallet": True/False,  # True when a proxyWallet exists
+                    "signatureType": 0 | 3,         # 0 = bare EOA, 3 = POLY_1271 deposit wallet
+                    "profile":     {...} | None,    # raw Polymarket profile body
+                }
+
+            ``signatureType`` is the value the agent should pass to
+            :meth:`register_wallet_credentials` and to
+            :func:`aion_sdk.build_v2_signed_order`. The function never
+            returns ``1`` / ``2`` because Polymarket's profile endpoint
+            does not distinguish a legacy Proxy from a deposit wallet
+            by field name alone — when a ``proxyWallet`` is present, the
+            current onboarding flow is the deposit-wallet flow and the
+            order signature type is ``3``. If you need to override this
+            (e.g. an old Safe or legacy Polymarket Proxy), pass an
+            explicit ``signature_type`` to
+            :meth:`register_wallet_credentials` after calling this
+            helper.
+
+        Raises:
+            ApiError: If the network call fails. Callers that prefer to
+                fall back to ``signatureType=0`` on network errors
+                should wrap this in a ``try``/``except``.
+
+        Example::
+
+            from eth_account import Account
+            from aion_sdk import AionMarketClient
+
+            eoa = Account.from_key(private_key).address
+            info = AionMarketClient.resolve_polymarket_wallet(eoa)
+
+            wallet = info["tradingWallet"]
+            sig_type = info["signatureType"]
+
+            # Register the correct wallet — NOT the bare EOA when a
+            # deposit wallet exists.
+            client.register_wallet_credentials(
+                wallet_address=wallet,
+                api_key=clob_creds.api_key,
+                api_secret=clob_creds.api_secret,
+                api_passphrase=clob_creds.api_passphrase,
+                signature_type=sig_type,
+            )
+        """
+        eoa = eoa_address.strip()
+        if not eoa.startswith("0x") or len(eoa) != 42:
+            raise ValueError(
+                f"resolve_polymarket_wallet: expected a 0x-prefixed EOA "
+                f"address (42 chars), got {eoa!r}"
+            )
+
+        url = (
+            f"https://polymarket.com/api/profile/userData?address={eoa}"
+        )
+        req = request.Request(url, method="GET")
+        req.add_header("Accept", "application/json")
+        req.add_header("User-Agent", "aion-sdk")
+        try:
+            with request.urlopen(req, timeout=timeout) as resp:
+                body = resp.read().decode("utf-8")
+        except error.HTTPError as exc:
+            # 404 = no Polymarket profile for this EOA → trade from bare EOA
+            if exc.code == 404:
+                return {
+                    "eoa": eoa,
+                    "tradingWallet": eoa,
+                    "isDepositWallet": False,
+                    "signatureType": 0,
+                    "profile": None,
+                }
+            raise ApiError(
+                message=f"Polymarket profile API HTTP {exc.code}",
+                code=exc.code,
+                status_code=exc.code,
+                response_body={"reason": str(exc.reason)},
+                url=url,
+                method="GET",
+            ) from exc
+        except error.URLError as exc:
+            raise ApiError(
+                message=f"Polymarket profile API unreachable: {exc.reason}",
+                code=500,
+                status_code=500,
+                response_body={"reason": str(exc.reason)},
+                url=url,
+                method="GET",
+            ) from exc
+
+        try:
+            profile = jsonlib.loads(body) if body else None
+        except ValueError:
+            profile = None
+
+        if not isinstance(profile, dict):
+            # No Polymarket account → trade from bare EOA
+            return {
+                "eoa": eoa,
+                "tradingWallet": eoa,
+                "isDepositWallet": False,
+                "signatureType": 0,
+                "profile": None,
+            }
+
+        proxy_wallet = profile.get("proxyWallet")
+        if isinstance(proxy_wallet, str) and proxy_wallet.startswith("0x"):
+            # Polymarket has a wallet contract on file for this EOA.
+            # New-onboarding accounts → deposit wallet → POLY_1271 (3).
+            # Pass signature_type=0/1/2 explicitly to override if you
+            # know the wallet predates the deposit-wallet rollout.
+            return {
+                "eoa": eoa,
+                "tradingWallet": proxy_wallet,
+                "isDepositWallet": True,
+                "signatureType": 3,
+                "profile": profile,
+            }
+
+        return {
+            "eoa": eoa,
+            "tradingWallet": eoa,
+            "isDepositWallet": False,
+            "signatureType": 0,
+            "profile": profile,
+        }
+
     def _headers(self) -> Dict[str, str]:
         """Generate request headers with authentication"""
         headers = {"Content-Type": "application/json"}
@@ -1274,13 +1453,17 @@ class AionMarketClient:
             }
             return response
 
-        # Route by signatureType:
-        #   0 (EOA)        -> /aiagent/charge-fee/polymarket/eoa-trade-fee
-        #                     (requires the EOA to have approved the
-        #                     platform Fireblocks Vault as a pUSD spender)
-        #   1/2/3 (Proxy / Safe / Deposit Wallet)
-        #                  -> /aiagent/charge-fee/polymarket/trade-fee
-        #                     (Safe AllowanceModule path)
+        # Route by signatureType (since SDK 0.10.4):
+        #   0 (EOA)            -> /aiagent/charge-fee/polymarket/eoa-trade-fee
+        #                         (EOA must have approved the Fireblocks
+        #                          Vault as a pUSD spender beforehand)
+        #   3 (Deposit Wallet) -> /order/chargeDepositWalletFee
+        #                         (Deposit Wallet contract must have
+        #                          approved the Fireblocks Vault as a
+        #                          pUSD spender beforehand)
+        #   1/2 (Proxy / Safe) -> /aiagent/charge-fee/polymarket/trade-fee
+        #                         (Safe AllowanceModule path — requires
+        #                          addDelegate + setAllowance off-band)
         signature_type = normalized_order.get("signatureType")
         try:
             sig_int = int(signature_type)
@@ -1295,6 +1478,12 @@ class AionMarketClient:
                     eoa_address=wallet_address,
                 )
                 charge_field = "eoaAddress"
+            elif sig_int == 3:
+                fee_result = self.charge_polymarket_deposit_wallet_fee(
+                    amount=fee_amount_str,
+                    deposit_wallet_address=wallet_address,
+                )
+                charge_field = "depositWalletAddress"
             else:
                 fee_result = self.charge_polymarket_fee(
                     amount=fee_amount_str,
@@ -1850,6 +2039,82 @@ class AionMarketClient:
             json={
                 "amount": amount,
                 "safeAddress": safe_address,
+            },
+        )
+
+    def charge_polymarket_deposit_wallet_fee(
+        self,
+        amount: str,
+        deposit_wallet_address: str,
+    ) -> Dict[str, Any]:
+        """
+        Charge the platform trading fee for a Polymarket order signed by
+        a **Deposit Wallet** (``signatureType=3`` / POLY_1271).
+
+        Backed by the ``/order/chargeDepositWalletFee`` endpoint, which
+        makes the platform Fireblocks Vault execute
+        ``pUSD.transferFrom(depositWalletAddress, platformFeeAddress, amount)``.
+
+        Mirrors the two-argument shape of :meth:`charge_polymarket_fee`
+        (Safe / ``/order/signTransferFrom``) so callers can swap between
+        the two wallet types without re-plumbing parameters. The fee
+        token, token decimals, and Fireblocks Vault ID are picked from
+        the backend's default configuration.
+
+        Why this is separate from :meth:`charge_polymarket_fee` (Safe) and
+        :meth:`charge_polymarket_eoa_fee` (EOA):
+          - Safe wallets need an AllowanceModule + delegate + setAllowance
+            workflow off-band, executed via ``executeAllowanceTransfer``.
+          - Deposit Wallets are plain ERC-1271 smart-wallet contracts that
+            hold pUSD directly; once they have an ERC-20 ``approve``, the
+            Vault can run an ordinary ``transferFrom`` against them.
+          - EOA wallets behave the same way as Deposit Wallets from the
+            ``transferFrom`` perspective, but the funder address is an EOA
+            instead of a wallet contract. The backend keeps the two paths
+            separate so the failure modes stay explicit.
+
+        Prerequisites:
+          - The Deposit Wallet contract is **already deployed on Polygon**.
+            Polymarket Deposit Wallets are counterfactual (CREATE2): until
+            the first deposit/trade their bytecode is not on-chain. The
+            endpoint checks ``eth_getCode`` and returns ``400`` immediately
+            if the address has no code.
+          - The Deposit Wallet has called ``pUSD.approve(<Vault>, allowance)``
+            on Polygon. The ``approve`` must be executed *by the wallet
+            contract* (via its ``execTransaction`` meta-tx flow), not by
+            the controlling EOA directly. Query the Vault address via
+            :meth:`get_polymarket_eoa_spender` (the same spender is reused).
+          - The Deposit Wallet holds enough pUSD to cover the fee.
+
+        Tip: prefer ``client.trade(...)`` over calling this endpoint
+        manually — :meth:`trade` auto-routes by ``signatureType`` and
+        invokes this method when ``signatureType=3``.
+
+        Args:
+            amount: Fee amount as a decimal string in pUSD (e.g.
+                ``"0.55"``). The backend parses this with the token's
+                decimals (6 by default).
+            deposit_wallet_address: Polymarket Deposit Wallet **contract**
+                address. **Must** be the POLY_1271 wallet contract, not
+                the controlling EOA.
+
+        Returns:
+            Raw Fireblocks ``createTransaction`` response containing
+            ``data.id`` and ``data.status``.
+
+        Raises:
+            ApiError: If the Deposit Wallet contract is not yet deployed
+                (counterfactual), if the allowance is insufficient, or if
+                Fireblocks rejects the transaction. The error body
+                includes ``spender``, ``remaining``, and ``required`` so
+                that approve calls can be retried with a larger amount.
+        """
+        return self._request(
+            "POST",
+            "/order/chargeDepositWalletFee",
+            json={
+                "amount": amount,
+                "depositWalletAddress": deposit_wallet_address,
             },
         )
 

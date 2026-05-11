@@ -33,6 +33,7 @@ def _base_kwargs(**overrides):
         taker_amount="10000000",
         side="BUY",
         salt=12345,
+        timestamp=1000000,
     )
     kwargs.update(overrides)
     return kwargs
@@ -41,35 +42,34 @@ def _base_kwargs(**overrides):
 def test_build_v2_signed_order_returns_complete_payload():
     order = build_v2_signed_order(**_base_kwargs())
 
-    # Schema check — every field the backend expects must be present.
-    # Polymarket CTF Exchange V2 verifies a 12-field Order struct (same
-    # as V1); timestamp/metadata/builder are NOT part of the EIP-712
-    # typed data and are no longer emitted by build_v2_signed_order.
+    # V2 Order struct: 11 EIP-712 fields + expiration (HTTP only) + signature.
     expected_keys = {
         "salt",
         "maker",
         "signer",
-        "taker",
         "tokenId",
         "makerAmount",
         "takerAmount",
         "side",
-        "expiration",
-        "nonce",
-        "feeRateBps",
         "signatureType",
+        "timestamp",
+        "metadata",
+        "builder",
+        "expiration",
         "signature",
     }
     assert set(order.keys()) == expected_keys
 
     assert order["maker"] == _TEST_ADDRESS
     assert order["signer"] == _TEST_ADDRESS  # defaults to maker
-    assert order["taker"] == ZERO_ADDRESS
     assert order["side"] == "BUY"
     assert order["signatureType"] == 0
     assert order["signature"].startswith("0x")
     # 65-byte ECDSA signature -> 130 hex chars + "0x"
     assert len(order["signature"]) == 132
+    assert int(order["timestamp"]) > 0
+    assert order["metadata"] == ZERO_BYTES32
+    assert order["builder"] == ZERO_BYTES32
 
 
 def test_signature_is_deterministic_for_fixed_inputs():
@@ -104,21 +104,20 @@ def test_signature_recovers_to_signer_address():
                 {"name": "salt", "type": "uint256"},
                 {"name": "maker", "type": "address"},
                 {"name": "signer", "type": "address"},
-                {"name": "taker", "type": "address"},
                 {"name": "tokenId", "type": "uint256"},
                 {"name": "makerAmount", "type": "uint256"},
                 {"name": "takerAmount", "type": "uint256"},
-                {"name": "expiration", "type": "uint256"},
-                {"name": "nonce", "type": "uint256"},
-                {"name": "feeRateBps", "type": "uint256"},
                 {"name": "side", "type": "uint8"},
                 {"name": "signatureType", "type": "uint8"},
+                {"name": "timestamp", "type": "uint256"},
+                {"name": "metadata", "type": "bytes32"},
+                {"name": "builder", "type": "bytes32"},
             ],
         },
         "primaryType": "Order",
         "domain": {
             "name": "Polymarket CTF Exchange",
-            "version": "1",
+            "version": "2",
             "chainId": 137,
             "verifyingContract": V2_CTF_EXCHANGE,
         },
@@ -126,15 +125,14 @@ def test_signature_recovers_to_signer_address():
             "salt": int(order["salt"]),
             "maker": order["maker"],
             "signer": order["signer"],
-            "taker": order["taker"],
             "tokenId": int(order["tokenId"]),
             "makerAmount": int(order["makerAmount"]),
             "takerAmount": int(order["takerAmount"]),
-            "expiration": int(order["expiration"]),
-            "nonce": int(order["nonce"]),
-            "feeRateBps": int(order["feeRateBps"]),
             "side": 0 if order["side"] == "BUY" else 1,
             "signatureType": order["signatureType"],
+            "timestamp": int(order["timestamp"]),
+            "metadata": bytes.fromhex(order["metadata"].replace("0x", "").zfill(64)),
+            "builder": bytes.fromhex(order["builder"].replace("0x", "").zfill(64)),
         },
     }
 
@@ -147,10 +145,10 @@ def test_supports_all_signature_types():
     # sigType=0 (EOA): signer defaults to maker (= the EOA itself).
     order0 = build_v2_signed_order(**_base_kwargs(signature_type=0))
     assert order0["signatureType"] == 0
-    # sigType in {1,2,3}: maker is the smart-contract wallet, signer must be
+    # sigType in {1,2}: maker is the smart-contract wallet, signer must be
     # the controlling EOA (the address derived from private_key).
     deposit_wallet = "0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185"
-    for sig_type in (1, 2, 3):
+    for sig_type in (1, 2):
         order = build_v2_signed_order(
             **_base_kwargs(
                 signature_type=sig_type,
@@ -161,12 +159,23 @@ def test_supports_all_signature_types():
         assert order["signatureType"] == sig_type
         assert order["maker"] == deposit_wallet
         assert order["signer"] == _TEST_ADDRESS
+    # sigType=3 (POLY_1271): signer defaults to maker (= deposit wallet).
+    order3 = build_v2_signed_order(
+        **_base_kwargs(
+            signature_type=3,
+            maker=deposit_wallet,
+        )
+    )
+    assert order3["signatureType"] == 3
+    assert order3["maker"] == deposit_wallet
+    assert order3["signer"] == deposit_wallet
 
 
 def test_smart_contract_wallet_requires_explicit_signer():
-    """sigType=1/2/3 must reject the call when signer is omitted."""
+    """sigType=1/2 must reject the call when signer is omitted.
+    sigType=3 (POLY_1271) defaults signer to maker so does not error."""
     deposit_wallet = "0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185"
-    for sig_type in (1, 2, 3):
+    for sig_type in (1, 2):
         with pytest.raises(ValueError, match="signer is required"):
             build_v2_signed_order(
                 **_base_kwargs(signature_type=sig_type, maker=deposit_wallet)
@@ -174,12 +183,13 @@ def test_smart_contract_wallet_requires_explicit_signer():
 
 
 def test_signer_must_match_private_key_eoa():
-    """Detect the common ``private_key from EOA-A but signer=EOA-B`` mistake."""
+    """Detect the common ``private_key from EOA-A but signer=EOA-B`` mistake.
+    Only applies to sigType 0/1/2; sigType=3 skips this check."""
     other_eoa = "0x000000000000000000000000000000000000dEaD"
     with pytest.raises(ValueError, match="does not match the EOA derived from"):
         build_v2_signed_order(
             **_base_kwargs(
-                signature_type=3,
+                signature_type=1,
                 maker="0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185",
                 signer=other_eoa,
             )
@@ -245,10 +255,33 @@ def test_invalid_address_raises():
         build_v2_signed_order(**_base_kwargs(maker="not-an-address"))
 
 
-def test_legacy_v2_extension_kwargs_are_ignored_with_warning():
-    """timestamp/metadata/builder kwargs are accepted but ignored (deprecated)."""
-    with pytest.warns(DeprecationWarning, match="timestamp/metadata/builder"):
-        order = build_v2_signed_order(**_base_kwargs(timestamp=1714400000))
-    assert "timestamp" not in order
-    assert "metadata" not in order
-    assert "builder" not in order
+def test_deprecated_v1_kwargs_with_warning():
+    """taker/nonce/fee_rate_bps are V1 kwargs — accepted but emit deprecation warning."""
+    with pytest.warns(DeprecationWarning, match="taker/nonce/fee_rate_bps"):
+        order = build_v2_signed_order(**_base_kwargs(taker=ZERO_ADDRESS))
+    # V1 fields should not appear in output.
+    assert "taker" not in order
+    assert "nonce" not in order
+    assert "feeRateBps" not in order
+    # V2 fields should be present.
+    assert "timestamp" in order
+    assert "metadata" in order
+    assert "builder" in order
+
+
+def test_poly_1271_produces_erc7739_wrapped_signature():
+    """sigType=3 (Deposit Wallet) produces an ERC-7739 wrapped signature,
+    which is significantly longer than a standard 65-byte ECDSA signature."""
+    deposit_wallet = "0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185"
+    order = build_v2_signed_order(
+        **_base_kwargs(
+            signature_type=3,
+            maker=deposit_wallet,
+        )
+    )
+    assert order["signature"].startswith("0x")
+    # ERC-7739 wrapped: 65-byte ECDSA + 32-byte domainSep + 32-byte contentsHash
+    # + contentsType bytes + 2-byte length = much longer than 132 hex chars.
+    assert len(order["signature"]) > 132
+    assert order["signer"] == deposit_wallet
+    assert order["maker"] == deposit_wallet

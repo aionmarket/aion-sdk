@@ -6,10 +6,11 @@ This module is OPTIONAL and INDEPENDENT from the rest of ``aion_sdk``.
 Why it exists:
     The official ``py-clob-client`` (<= 0.34.6) only signs Polymarket V1
     orders (USDC settlement). Polymarket V2 markets settle in ``pUSD``
-    and require the EIP-712 ``Order`` struct to include three additional
-    fields: ``timestamp``, ``metadata`` and ``builder``. Until upstream
-    ``py-clob-client`` adds V2 support, agents that want to trade V2
-    markets need an independent signer.
+    and use a different 11-field EIP-712 ``Order`` struct (with
+    ``timestamp``, ``metadata``, ``builder`` instead of V1's ``taker``,
+    ``nonce``, ``feeRateBps``). For Deposit Wallet (POLY_1271 /
+    signatureType=3), this module produces ERC-7739 wrapped signatures
+    using the Solady TypedDataSign pattern.
 
 What it does NOT do:
     * It does not replace ``client.trade(...)`` — it only produces the
@@ -25,10 +26,16 @@ Install:
     module raises an informative error on import.
 
 Wallet types:
-    All four Polymarket signature types are supported (the helper does
-    not enforce any). ``signatureType=0`` (EOA) is the default. Pass an
-    explicit value if your wallet is a Polymarket Proxy / Gnosis Safe /
-    Deposit Wallet.
+    All four Polymarket signature types are supported:
+
+    * ``signatureType=0`` (EOA): ``maker`` = ``signer`` = EOA address.
+    * ``signatureType=1`` (Polymarket Proxy): ``maker`` = proxy contract,
+      ``signer`` = controlling EOA.
+    * ``signatureType=2`` (Gnosis Safe): ``maker`` = Safe contract,
+      ``signer`` = Safe owner EOA.
+    * ``signatureType=3`` (Deposit Wallet / POLY_1271): ``maker`` =
+      ``signer`` = deposit wallet address. The ``private_key`` is the
+      controlling EOA's key. The signature is ERC-7739 wrapped.
 
 Usage:
     >>> from aion_sdk.signing import build_v2_signed_order, V2_CTF_EXCHANGE
@@ -82,39 +89,46 @@ _SIDE_BUY: int = 0
 _SIDE_SELL: int = 1
 
 #: EIP-712 domain name and version for the V2 CTF Exchange contracts.
-#: NOTE: although the contract's ERC-5267 ``eip712Domain()`` getter
-#: returns ``version="2"``, the actual ``_hashTypedDataV4`` inside the
-#: Polymarket CTF Exchange uses ``version="1"`` (see Polymarket's
-#: ``py-order-utils.builders.base_builder._get_domain_separator``). The
-#: signed digest must use the version that matches the on-chain
-#: ``DOMAIN_SEPARATOR``, i.e. ``"1"``. Using ``"2"`` produced a digest
-#: that did not match and caused the CLOB to reject every order with
-#: ``Invalid order payload``.
+#: The V2 CTF Exchange contracts use ``version="2"`` (as returned by
+#: the on-chain ``eip712Domain()`` getter and confirmed by
+#: ``py-clob-client-v2``). V1 contracts used ``version="1"``.
 _EIP712_DOMAIN_NAME: str = "Polymarket CTF Exchange"
-_EIP712_DOMAIN_VERSION: str = "1"
+_EIP712_DOMAIN_VERSION: str = "2"
 
 #: V2 Order struct field layout. Field order matters — it is part of the
-#: EIP-712 type hash. The Polymarket CTF Exchange V2 (and Neg-Risk
-#: variants) verify a 12-field Order struct identical to V1. ``timestamp``
-#: / ``metadata`` / ``builder`` are HTTP-payload extensions used by the
-#: CLOB book; they are NOT part of the on-chain Order struct and MUST
-#: NOT be included in the EIP-712 typed data, otherwise the recovered
-#: signer will not match and the CLOB rejects the order with
-#: ``Invalid order payload``.
+#: EIP-712 type hash. The V2 CTF Exchange uses an 11-field Order struct
+#: that differs from V1: ``taker``/``nonce``/``feeRateBps`` are removed
+#: and ``timestamp``/``metadata``/``builder`` are added.
 _ORDER_FIELDS_V2 = [
     {"name": "salt", "type": "uint256"},
     {"name": "maker", "type": "address"},
     {"name": "signer", "type": "address"},
-    {"name": "taker", "type": "address"},
     {"name": "tokenId", "type": "uint256"},
     {"name": "makerAmount", "type": "uint256"},
     {"name": "takerAmount", "type": "uint256"},
-    {"name": "expiration", "type": "uint256"},
-    {"name": "nonce", "type": "uint256"},
-    {"name": "feeRateBps", "type": "uint256"},
     {"name": "side", "type": "uint8"},
     {"name": "signatureType", "type": "uint8"},
+    {"name": "timestamp", "type": "uint256"},
+    {"name": "metadata", "type": "bytes32"},
+    {"name": "builder", "type": "bytes32"},
 ]
+
+#: ERC-7739 / POLY_1271 constants for Deposit Wallet signing.
+_ORDER_TYPE_STRING: str = (
+    "Order(uint256 salt,address maker,address signer,uint256 tokenId,"
+    "uint256 makerAmount,uint256 takerAmount,uint8 side,uint8 signatureType,"
+    "uint256 timestamp,bytes32 metadata,bytes32 builder)"
+)
+_SOLADY_TYPE_STRING: str = (
+    "TypedDataSign(Order contents,string name,string version,uint256 chainId,"
+    "address verifyingContract,bytes32 salt)"
+    + _ORDER_TYPE_STRING
+)
+_DOMAIN_TYPE_STRING: str = (
+    "EIP712Domain(string name,string version,uint256 chainId,address verifyingContract)"
+)
+_DEPOSIT_WALLET_NAME: str = "DepositWallet"
+_DEPOSIT_WALLET_VERSION: str = "1"
 
 # ---------------------------------------------------------------------------
 # Public API
@@ -141,6 +155,160 @@ def _require_eth_account():
             "Install with:  pip install 'aion-sdk[signing]'"
         ) from exc
     return Account, encode_typed_data
+
+
+def _require_erc7739_deps():
+    """Lazy import for ERC-7739 (POLY_1271) signing dependencies."""
+    try:
+        from eth_abi import encode as abi_encode  # type: ignore[import-not-found]
+        from eth_utils import keccak  # type: ignore[import-not-found]
+    except ImportError as exc:  # pragma: no cover
+        raise SigningDependencyError(
+            "ERC-7739 (POLY_1271 / Deposit Wallet) signing requires "
+            "'eth-abi' and 'eth-utils'. Install with:  pip install 'aion-sdk[signing]'"
+        ) from exc
+    return abi_encode, keccak
+
+
+def _hex_to_bytes32(hex_str: str) -> bytes:
+    """Convert a 0x-prefixed hex string to a 32-byte value."""
+    return bytes.fromhex(hex_str.replace("0x", "").zfill(64))
+
+
+def _to_bytes32(value) -> bytes:
+    """Convert a hex string or bytes value to 32 bytes."""
+    if isinstance(value, bytes):
+        return value
+    return _hex_to_bytes32(value)
+
+
+def _build_poly_1271_signature(
+    *,
+    message: Dict[str, Any],
+    signer_addr: str,
+    chain_id: int,
+    exchange_address: str,
+    private_key: str,
+) -> str:
+    """
+    Build an ERC-7739 wrapped signature for POLY_1271 (Deposit Wallet).
+
+    The Polymarket Deposit Wallet uses the Solady ERC-7739 pattern:
+    ``TypedDataSign(Order contents, string name, string version,
+    uint256 chainId, address verifyingContract, bytes32 salt)``
+
+    The ``verifyingContract`` for the nested wallet domain is the deposit
+    wallet address (= ``signer`` in the order).
+    """
+    Account, _ = _require_eth_account()
+    abi_encode, keccak = _require_erc7739_deps()
+
+    order_type_hash = keccak(text=_ORDER_TYPE_STRING)
+    domain_type_hash = keccak(text=_DOMAIN_TYPE_STRING)
+    solady_type_hash = keccak(text=_SOLADY_TYPE_STRING)
+    dw_name_hash = keccak(text=_DEPOSIT_WALLET_NAME)
+    dw_version_hash = keccak(text=_DEPOSIT_WALLET_VERSION)
+    exchange_name_hash = keccak(text=_EIP712_DOMAIN_NAME)
+    exchange_version_hash = keccak(text=_EIP712_DOMAIN_VERSION)
+    deposit_wallet_domain_salt = bytes(32)  # 0x00...00
+
+    # App domain separator (the CTF Exchange V2 domain)
+    app_domain_separator = keccak(
+        primitive=abi_encode(
+            ["bytes32", "bytes32", "bytes32", "uint256", "address"],
+            [
+                domain_type_hash,
+                exchange_name_hash,
+                exchange_version_hash,
+                chain_id,
+                exchange_address,
+            ],
+        )
+    )
+
+    # Hash the Order struct contents.
+    contents_hash = keccak(
+        primitive=abi_encode(
+            [
+                "bytes32",
+                "uint256",
+                "address",
+                "address",
+                "uint256",
+                "uint256",
+                "uint256",
+                "uint8",
+                "uint8",
+                "uint256",
+                "bytes32",
+                "bytes32",
+            ],
+            [
+                order_type_hash,
+                int(message["salt"]),
+                message["maker"],
+                message["signer"],
+                int(message["tokenId"]),
+                int(message["makerAmount"]),
+                int(message["takerAmount"]),
+                int(message["side"]),
+                int(message["signatureType"]),
+                int(message["timestamp"]),
+                _to_bytes32(message["metadata"]),
+                _to_bytes32(message["builder"]),
+            ],
+        )
+    )
+
+    # TypedDataSign struct hash (Solady ERC-7739 pattern).
+    typed_data_sign_struct_hash = keccak(
+        primitive=abi_encode(
+            [
+                "bytes32",
+                "bytes32",
+                "bytes32",
+                "bytes32",
+                "uint256",
+                "address",
+                "bytes32",
+            ],
+            [
+                solady_type_hash,
+                contents_hash,
+                dw_name_hash,
+                dw_version_hash,
+                chain_id,
+                signer_addr,  # deposit wallet address
+                deposit_wallet_domain_salt,
+            ],
+        )
+    )
+
+    # Final digest: \x19\x01 + appDomainSeparator + typedDataSignStructHash
+    digest = keccak(
+        primitive=(
+            b"\x19\x01" + app_domain_separator + typed_data_sign_struct_hash
+        )
+    )
+
+    # Sign with the EOA's private key.
+    signed = Account._sign_hash(digest, private_key=private_key)
+    inner_signature = signed.signature.hex()
+    if inner_signature.startswith("0x"):
+        inner_signature = inner_signature[2:]
+
+    # Append ERC-7739 wrapper: domainSeparator + contentsHash + contentsType + len
+    contents_type = _ORDER_TYPE_STRING.encode("utf-8").hex()
+    contents_type_len = len(_ORDER_TYPE_STRING).to_bytes(2, "big").hex()
+
+    return (
+        "0x"
+        + inner_signature
+        + app_domain_separator.hex()
+        + contents_hash.hex()
+        + contents_type
+        + contents_type_len
+    )
 
 
 def _normalize_side(side: Any) -> int:
@@ -203,8 +371,18 @@ def _normalize_bytes32(value: str, name: str) -> str:
 
 
 def _generate_salt() -> int:
-    """Cryptographically-strong 12-byte salt (matches Polymarket's range)."""
-    return secrets.randbits(96)
+    """Generate a salt matching py-clob-client-v2's range.
+
+    The Polymarket CLOB rejects salts larger than ~41 bits.
+    py-clob-client-v2 uses ``int(random.random() * timestamp_ms)``
+    which caps at roughly ``1.78e12`` (~41 bits).
+    We replicate that range with a CSPRNG.
+    """
+    import time as _time
+
+    timestamp_ms = _time.time_ns() // 1_000_000
+    # random float in [0, 1) * timestamp_ms  →  fits within ~41 bits
+    return int(secrets.randbelow(timestamp_ms))
 
 
 def build_v2_signed_order(
@@ -218,20 +396,21 @@ def build_v2_signed_order(
     verifying_contract: Optional[str] = None,
     neg_risk: Optional[bool] = None,
     signer: Optional[str] = None,
-    taker: str = ZERO_ADDRESS,
-    expiration: str = "0",
-    nonce: str = "0",
-    fee_rate_bps: str = "0",
     signature_type: int = 0,
     timestamp: Optional[int] = None,
     metadata: str = ZERO_BYTES32,
     builder: str = ZERO_BYTES32,
+    expiration: str = "0",
     salt: Optional[int] = None,
     chain_id: int = POLYGON_CHAIN_ID,
+    # Deprecated V1 kwargs — accepted silently for backward compat.
+    taker: Optional[str] = None,
+    nonce: Optional[str] = None,
+    fee_rate_bps: Optional[str] = None,
 ) -> Dict[str, Any]:
     """
-    Build and sign a Polymarket V2 order (12-field EIP-712 Order struct,
-    domain ``name="Polymarket CTF Exchange"`` / ``version="1"``).
+    Build and sign a Polymarket V2 order (11-field EIP-712 Order struct,
+    domain ``name="Polymarket CTF Exchange"`` / ``version="2"``).
 
     Returns a dict in the exact shape that
     :meth:`aion_sdk.AionMarketClient.trade` expects under the ``order``
@@ -246,105 +425,73 @@ def build_v2_signed_order(
     * ``2`` — Gnosis Safe: ``maker`` is the Safe contract address;
       ``signer`` MUST be a Safe owner EOA.
     * ``3`` — Deposit Wallet (POLY_1271): ``maker`` is the deposit
-      wallet contract address (e.g. ``0xC4378...``); ``signer`` MUST be
-      the controlling EOA.
-
-    For Polymarket "neg-risk" markets, the V2 verifying contract is
-    different from vanilla CTF Exchange. Either:
-
-    * pass ``neg_risk=True`` (recommended) to let the SDK pick
-      :data:`V2_NEG_RISK_EXCHANGE_A` automatically, or
-    * pass an explicit ``verifying_contract=...``.
-
-    Picking the wrong exchange (vanilla vs neg-risk) is the #1 cause of
-    ``Invalid order payload`` rejections from the CLOB.
+      wallet contract address; ``signer`` defaults to ``maker``. The
+      signature is ERC-7739 wrapped (Solady TypedDataSign pattern). The
+      ``private_key`` must belong to the EOA that controls the deposit
+      wallet.
 
     Args:
-        private_key: 0x-prefixed hex private key used to ECDSA-sign the
-            EIP-712 hash. Never logged. The address derived from this
-            key MUST equal ``signer``.
-        maker: Wallet that owns the funds. For sigType=0 this is the
-            EOA itself; for sigType=1/2/3 this is the smart-contract
-            wallet.
+        private_key: 0x-prefixed hex private key used to sign. For
+            sigType 0/1/2, the derived EOA must equal ``signer``. For
+            sigType 3 (POLY_1271), this is the controlling EOA's key;
+            ``signer`` is the deposit wallet address.
+        maker: Wallet that owns the funds.
         token_id: Polymarket CTF token id (decimal string).
         maker_amount: Maker asset amount in atomic units (6-decimal pUSD
             for V2 markets), as a string.
         taker_amount: Taker asset amount in atomic units, as a string.
         side: ``"BUY"``/``"SELL"`` (case-insensitive) or ``0``/``1``.
-        verifying_contract: V2 Exchange contract address. Mutually
-            exclusive with ``neg_risk``. Defaults to
-            :data:`V2_CTF_EXCHANGE` if neither is supplied.
+        verifying_contract: V2 Exchange contract address.
         neg_risk: When ``True``, signs against
-            :data:`V2_NEG_RISK_EXCHANGE_A`; when ``False`` (or unset),
-            signs against :data:`V2_CTF_EXCHANGE`. Determine this from
-            the market metadata's ``neg_risk`` field (returned by
-            Polymarket gamma-api / our market list endpoint).
-        signer: Address that produced the signature. REQUIRED when
-            ``signature_type != 0``; for sigType=0 it defaults to
-            ``maker``. Always the controlling EOA, never the smart
-            contract.
-        taker: Specific counter-party. ``ZERO_ADDRESS`` (default) means
-            "any taker".
-        expiration: Unix-seconds expiration. ``"0"`` (default) = never.
-        nonce: On-chain nonce for cancellation. ``"0"`` is fine unless
-            you batch-cancel.
-        fee_rate_bps: Maker fee in basis points. ``"0"`` (default) =
-            inherit market default.
+            :data:`V2_NEG_RISK_EXCHANGE_A`.
+        signer: For sigType 0/1/2: the signing EOA. For sigType 3
+            (POLY_1271): defaults to ``maker`` (the deposit wallet).
         signature_type: 0=EOA, 1=Proxy, 2=Safe, 3=Deposit Wallet.
-        timestamp: DEPRECATED. Ignored \u2014 not part of the on-chain Order
-            struct. Kept for back-compat with aion-sdk \u2264 0.10.1 callers.
-        metadata: DEPRECATED. Ignored.
-        builder: DEPRECATED. Ignored.
+        timestamp: Unix-milliseconds timestamp. Defaults to current time.
+        metadata: 32-byte hex metadata. Defaults to zero bytes.
+        builder: 32-byte hex builder tag. Defaults to zero bytes.
+        expiration: Expiration (included in HTTP payload, not EIP-712).
         salt: Optional explicit salt. Defaults to a fresh 96-bit random.
         chain_id: EIP-712 chain id. Defaults to Polygon mainnet (137).
 
     Returns:
-        Dict with the 12 V2 ``order`` fields plus the hex-encoded
-        ``signature``, ready to be passed to ``client.trade(...)``.
+        Dict with the V2 ``order`` fields plus hex-encoded ``signature``.
 
-    Raises:
-        SigningDependencyError: If ``eth-account`` is not installed.
-        ValueError: If any input is malformed, ``signer`` is missing for
-            sigType != 0, or ``signer`` does not match the EOA derived
-            from ``private_key``.
+    Example (Deposit Wallet on a neg-risk market)::
 
-    Example (Deposit Wallet on a neg-risk market):
-
-    >>> from aion_sdk.signing import build_v2_signed_order
-    >>> signed = build_v2_signed_order(
-    ...     private_key=EOA_PK,
-    ...     maker="0xC4378BFEe30dBAc2A907ea1E486acCC78B02c185",  # deposit wallet
-    ...     signer=EOA_ADDRESS,                                   # controlling EOA
-    ...     signature_type=3,
-    ...     neg_risk=True,
-    ...     token_id="55555",
-    ...     maker_amount="5500000",
-    ...     taker_amount="10000000",
-    ...     side="BUY",
-    ... )
+        signed = build_v2_signed_order(
+            private_key=EOA_PK,
+            maker="0x0f151e...",      # deposit wallet address
+            signature_type=3,
+            neg_risk=True,
+            token_id="55555",
+            maker_amount="5500000",
+            taker_amount="10000000",
+            side="BUY",
+        )
     """
     Account, encode_typed_data = _require_eth_account()
+
+    # Warn about deprecated V1 kwargs.
+    if taker is not None or nonce is not None or fee_rate_bps is not None:
+        warnings.warn(
+            "build_v2_signed_order: taker/nonce/fee_rate_bps are V1 Order "
+            "fields and are not part of the V2 EIP-712 Order struct. They "
+            "are ignored. Remove them from your call site.",
+            DeprecationWarning,
+            stacklevel=2,
+        )
 
     # ------------------------------------------------------------------
     # Resolve verifying_contract
     # ------------------------------------------------------------------
-    # Polymarket has two V2 exchange families on Polygon:
-    #   * Vanilla CTF Exchange     -> 0xE111180000d2663C0091e4f400237545B87B996B
-    #   * Neg-Risk CTF Exchange A  -> 0xe2222d279d744050d28e00520010520000310F59
-    # The signed digest must use the same exchange the market settles on.
-    # Signing a neg-risk market against the vanilla exchange (or vice
-    # versa) produces a digest the on-chain Exchange.verifyOrder cannot
-    # recover, and the CLOB rejects with ``Invalid order payload``.
     if verifying_contract is None and neg_risk is None:
-        # Backward compatible default: vanilla CTF Exchange.
         verifying_contract = V2_CTF_EXCHANGE
     elif verifying_contract is None:
         verifying_contract = (
             V2_NEG_RISK_EXCHANGE_A if neg_risk else V2_CTF_EXCHANGE
         )
     elif neg_risk is not None:
-        # Both supplied — sanity-check they agree, otherwise the caller
-        # almost certainly has a mismatched market/contract pair.
         expected = V2_NEG_RISK_EXCHANGE_A if neg_risk else V2_CTF_EXCHANGE
         if verifying_contract.lower() != expected.lower():
             raise ValueError(
@@ -361,38 +508,34 @@ def build_v2_signed_order(
     if sig_type_int not in (0, 1, 2, 3):
         raise ValueError("signature_type must be one of 0, 1, 2, 3")
 
-    # For sigType in {1,2,3} (Polymarket Proxy / Gnosis Safe / Deposit
-    # Wallet) ``maker`` is the smart-contract wallet that holds the
-    # funds and ``signer`` MUST be the controlling EOA whose private key
-    # produced the signature. Defaulting ``signer = maker`` here would
-    # generate a signature that recovers to the EOA but be advertised as
-    # signed-by-the-contract — the CLOB then rejects with
-    # ``Invalid order payload`` (the cause of every reported deposit
-    # wallet trade failure prior to aion-sdk 0.10.3). Force callers to
-    # be explicit so the trap goes away.
+    pk_eoa = Account.from_key(private_key).address
+
     if signer is None:
-        if sig_type_int != 0:
+        if sig_type_int == 3:
+            # POLY_1271: signer = maker = deposit wallet address.
+            signer_addr = maker_addr
+        elif sig_type_int != 0:
             raise ValueError(
-                "signer is required when signature_type != 0. For Polymarket "
-                "Proxy (1) / Gnosis Safe (2) / Deposit Wallet (3), `maker` is "
-                "the smart-contract wallet address while `signer` must be the "
-                "controlling EOA whose private_key is signing this order."
+                "signer is required when signature_type is 1 (Proxy) or "
+                "2 (Safe). `maker` is the smart-contract wallet address "
+                "while `signer` must be the controlling EOA."
             )
-        signer_addr = maker_addr
+        else:
+            signer_addr = maker_addr
     else:
         signer_addr = _normalize_address(signer, "signer")
 
-    # Cross-check: the signature is produced by ``private_key``. Recover
-    # that EOA and ensure it matches ``signer`` — catches the very
-    # common ``private_key from EOA-A but signer=EOA-B`` mistake.
-    pk_eoa = Account.from_key(private_key).address
-    if pk_eoa.lower() != signer_addr.lower():
-        raise ValueError(
-            f"signer ({signer_addr}) does not match the EOA derived from "
-            f"private_key ({pk_eoa}). For Polymarket Proxy/Safe/Deposit "
-            f"wallets, `signer` must be the controlling EOA, NOT the wallet "
-            f"contract address."
-        )
+    # For sigType 0/1/2: signer must match the EOA derived from
+    # private_key. For sigType 3 (POLY_1271): signer is the deposit
+    # wallet address (a contract), so we skip this cross-check.
+    if sig_type_int != 3:
+        if pk_eoa.lower() != signer_addr.lower():
+            raise ValueError(
+                f"signer ({signer_addr}) does not match the EOA derived from "
+                f"private_key ({pk_eoa}). For Polymarket Proxy/Safe wallets, "
+                f"`signer` must be the controlling EOA, NOT the wallet "
+                f"contract address."
+            )
 
     # For sigType=0 (EOA), maker MUST equal signer (= the EOA).
     if sig_type_int == 0 and maker_addr.lower() != signer_addr.lower():
@@ -404,94 +547,90 @@ def build_v2_signed_order(
             f"(Deposit Wallet) and pass signer=<controlling EOA>."
         )
 
-    taker_addr = _normalize_address(taker, "taker")
     verifying = _normalize_address(verifying_contract, "verifying_contract")
     token_id_int = _to_uint(token_id, "token_id")
     maker_amt = _to_uint(maker_amount, "maker_amount")
     taker_amt = _to_uint(taker_amount, "taker_amount")
-    expiration_int = _to_uint(expiration, "expiration")
-    nonce_int = _to_uint(nonce, "nonce")
-    fee_rate = _to_uint(fee_rate_bps, "fee_rate_bps")
     side_int = _normalize_side(side)
     salt_int = int(salt) if salt is not None else _generate_salt()
     if salt_int < 0:
         raise ValueError("salt must be non-negative")
 
-    # NOTE: ``timestamp`` / ``metadata`` / ``builder`` are still accepted
-    # as kwargs for backward compatibility with callers written against
-    # aion-sdk <= 0.10.1, but they are NOT part of the EIP-712 typed
-    # data hashed by the Polymarket CTF Exchange V2 contracts. Including
-    # them caused the recovered signer to mismatch and the CLOB to
-    # reject every V2 order with ``Invalid order payload``. We silently
-    # ignore them here so old callers keep working.
-    if (
-        timestamp is not None
-        or metadata not in (None, ZERO_BYTES32)
-        or builder not in (None, ZERO_BYTES32)
-    ):
-        warnings.warn(
-            "build_v2_signed_order: timestamp/metadata/builder are not part "
-            "of the Polymarket CTF Exchange V2 EIP-712 Order struct and are "
-            "ignored. Remove them from your call site.",
-            DeprecationWarning,
-            stacklevel=2,
-        )
+    # timestamp defaults to current time in milliseconds.
+    ts_int = int(timestamp) if timestamp is not None else (time.time_ns() // 1_000_000)
+    metadata_hex = _normalize_bytes32(metadata, "metadata") if metadata else ZERO_BYTES32
+    builder_hex = _normalize_bytes32(builder, "builder") if builder else ZERO_BYTES32
+    expiration_int = _to_uint(expiration, "expiration")
 
+    # V2 EIP-712 message (11 fields — no taker/nonce/feeRateBps).
     message: Dict[str, Any] = {
         "salt": salt_int,
         "maker": maker_addr,
         "signer": signer_addr,
-        "taker": taker_addr,
         "tokenId": token_id_int,
         "makerAmount": maker_amt,
         "takerAmount": taker_amt,
-        "expiration": expiration_int,
-        "nonce": nonce_int,
-        "feeRateBps": fee_rate,
         "side": side_int,
         "signatureType": sig_type_int,
+        "timestamp": ts_int,
+        "metadata": _hex_to_bytes32(metadata_hex),
+        "builder": _hex_to_bytes32(builder_hex),
     }
 
-    typed_data = {
-        "types": {
-            "EIP712Domain": [
-                {"name": "name", "type": "string"},
-                {"name": "version", "type": "string"},
-                {"name": "chainId", "type": "uint256"},
-                {"name": "verifyingContract", "type": "address"},
-            ],
-            "Order": _ORDER_FIELDS_V2,
-        },
-        "primaryType": "Order",
-        "domain": {
-            "name": _EIP712_DOMAIN_NAME,
-            "version": _EIP712_DOMAIN_VERSION,
-            "chainId": int(chain_id),
-            "verifyingContract": verifying,
-        },
-        "message": message,
-    }
+    # ------------------------------------------------------------------
+    # Sign
+    # ------------------------------------------------------------------
+    if sig_type_int == 3:
+        # POLY_1271: ERC-7739 wrapped signature (Solady TypedDataSign).
+        signature_hex = _build_poly_1271_signature(
+            message=message,
+            signer_addr=signer_addr,
+            chain_id=int(chain_id),
+            exchange_address=verifying,
+            private_key=private_key,
+        )
+    else:
+        # EOA / Proxy / Safe: standard EIP-712 signature.
+        typed_data = {
+            "types": {
+                "EIP712Domain": [
+                    {"name": "name", "type": "string"},
+                    {"name": "version", "type": "string"},
+                    {"name": "chainId", "type": "uint256"},
+                    {"name": "verifyingContract", "type": "address"},
+                ],
+                "Order": _ORDER_FIELDS_V2,
+            },
+            "primaryType": "Order",
+            "domain": {
+                "name": _EIP712_DOMAIN_NAME,
+                "version": _EIP712_DOMAIN_VERSION,
+                "chainId": int(chain_id),
+                "verifyingContract": verifying,
+            },
+            "message": message,
+        }
 
-    signable = encode_typed_data(full_message=typed_data)
-    signed = Account.sign_message(signable, private_key=private_key)
-    signature_hex: str = signed.signature.hex()
-    if not signature_hex.startswith("0x"):
-        signature_hex = "0x" + signature_hex
+        signable = encode_typed_data(full_message=typed_data)
+        signed = Account.sign_message(signable, private_key=private_key)
+        signature_hex = signed.signature.hex()
+        if not signature_hex.startswith("0x"):
+            signature_hex = "0x" + signature_hex
 
     # Backend / Polymarket CLOB expect string-encoded big numbers + uppercase side.
     return {
         "salt": str(salt_int),
         "maker": maker_addr,
         "signer": signer_addr,
-        "taker": taker_addr,
         "tokenId": str(token_id_int),
         "makerAmount": str(maker_amt),
         "takerAmount": str(taker_amt),
         "side": "BUY" if side_int == _SIDE_BUY else "SELL",
-        "expiration": str(expiration_int),
-        "nonce": str(nonce_int),
-        "feeRateBps": str(fee_rate),
         "signatureType": sig_type_int,
+        "timestamp": str(ts_int),
+        "metadata": metadata_hex,
+        "builder": builder_hex,
+        "expiration": str(expiration_int),
         "signature": signature_hex,
     }
 

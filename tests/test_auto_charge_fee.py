@@ -57,7 +57,8 @@ def _make_v2_trade_payload(**overrides: Any) -> dict:
 
 
 # ============================================================
-# Auto-charge for Polymarket — Safe / Proxy / Deposit (sigType != 0)
+# Auto-charge for Polymarket — Deposit Wallet (sigType=3) routes to
+# /order/chargeDepositWalletFee (added in SDK 0.10.4)
 # ============================================================
 
 
@@ -82,7 +83,7 @@ def test_trade_auto_charges_polymarket_fee_on_success() -> None:
                     "walletAddress": payload["walletAddress"],
                 }
             )
-        if url.endswith("/aiagent/charge-fee/polymarket/trade-fee"):
+        if url.endswith("/order/chargeDepositWalletFee"):
             return _MockResponse({"data": {"id": "fb-1", "status": "SUBMITTED"}})
         raise AssertionError(f"unexpected url {url}")
 
@@ -92,16 +93,19 @@ def test_trade_auto_charges_polymarket_fee_on_success() -> None:
     assert out["success"] is True
     assert out["feeCharge"]["status"] == "ok"
     assert out["feeCharge"]["amount"] == "0.055000"
-    assert out["feeCharge"]["safeAddress"] == payload["walletAddress"]
+    assert out["feeCharge"]["depositWalletAddress"] == payload["walletAddress"]
     assert out["feeCharge"]["signatureType"] == 3
     trade_body = next(c["body"] for c in captured if c["url"].endswith("/markets/trade"))
     assert trade_body["feeAmount"] == 0.055
     fee_body = next(
         c["body"]
         for c in captured
-        if c["url"].endswith("/aiagent/charge-fee/polymarket/trade-fee")
+        if c["url"].endswith("/order/chargeDepositWalletFee")
     )
-    assert fee_body == {"amount": "0.055000", "safeAddress": payload["walletAddress"]}
+    assert fee_body == {
+        "amount": "0.055000",
+        "depositWalletAddress": payload["walletAddress"],
+    }
 
 
 def test_trade_auto_charge_can_be_disabled() -> None:
@@ -148,7 +152,7 @@ def test_trade_auto_charge_marks_failed_but_returns_trade_response() -> None:
         url = req.full_url if hasattr(req, "full_url") else req.get_full_url()
         if url.endswith("/markets/trade"):
             return _MockResponse({"success": True, "orderId": "oid"})
-        if url.endswith("/aiagent/charge-fee/polymarket/trade-fee"):
+        if url.endswith("/order/chargeDepositWalletFee"):
             raise RuntimeError("fireblocks down")
         raise AssertionError(f"unexpected url {url}")
 

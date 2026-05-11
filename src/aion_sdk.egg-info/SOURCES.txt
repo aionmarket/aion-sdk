@@ -10,7 +10,6 @@ src/aion_sdk.egg-info/dependency_links.txt
 src/aion_sdk.egg-info/requires.txt
 src/aion_sdk.egg-info/top_level.txt
 tests/test_aiagent_contract.py
-tests/test_auto_charge_fee.py
 tests/test_client.py
 tests/test_signing.py
 tests/test_signing_polymarket_compat.py

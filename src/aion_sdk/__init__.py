@@ -13,18 +13,15 @@ from .client import AionMarketClient, ApiError
 # when ``eth-account`` is not present.
 try:  # pragma: no cover - exercised only when eth-account is installed
     from .signing import (  # noqa: F401
-        approve_pusd_for_fireblocks,
         build_v2_signed_order,
     )
 except ImportError:  # pragma: no cover
     build_v2_signed_order = None  # type: ignore[assignment]
-    approve_pusd_for_fireblocks = None  # type: ignore[assignment]
 
-__version__ = "0.10.10"
+__version__ = "0.14.1"
 __author__ = "AION Market"
 __all__ = [
     "AionMarketClient",
     "ApiError",
     "build_v2_signed_order",
-    "approve_pusd_for_fireblocks",
 ]

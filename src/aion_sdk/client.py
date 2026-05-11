@@ -151,16 +151,10 @@ class AionMarketClient:
 
             ``signatureType`` is the value the agent should pass to
             :meth:`register_wallet_credentials` and to
-            :func:`aion_sdk.build_v2_signed_order`. The function never
-            returns ``1`` / ``2`` because Polymarket's profile endpoint
-            does not distinguish a legacy Proxy from a deposit wallet
-            by field name alone — when a ``proxyWallet`` is present, the
-            current onboarding flow is the deposit-wallet flow and the
-            order signature type is ``3``. If you need to override this
-            (e.g. an old Safe or legacy Polymarket Proxy), pass an
-            explicit ``signature_type`` to
-            :meth:`register_wallet_credentials` after calling this
-            helper.
+            :func:`aion_sdk.build_v2_signed_order`. Only ``0`` (bare
+            EOA) and ``3`` (POLY_1271 Deposit Wallet) are returned —
+            the platform does not support legacy Polymarket Proxy
+            (``1``) or Gnosis Safe (``2``) signing.
 
         Raises:
             ApiError: If the network call fails. Callers that prefer to
@@ -249,10 +243,6 @@ class AionMarketClient:
 
         proxy_wallet = profile.get("proxyWallet")
         if isinstance(proxy_wallet, str) and proxy_wallet.startswith("0x"):
-            # Polymarket has a wallet contract on file for this EOA.
-            # New-onboarding accounts → deposit wallet → POLY_1271 (3).
-            # Pass signature_type=0/1/2 explicitly to override if you
-            # know the wallet predates the deposit-wallet rollout.
             return {
                 "eoa": eoa,
                 "tradingWallet": proxy_wallet,
@@ -1120,58 +1110,6 @@ class AionMarketClient:
             json={"solAddress": sol_address},
         )
 
-    def get_wallet_audit_status(self, wallet_address: str) -> Dict[str, Any]:
-        """
-        Check Deposit-Wallet on-chain approval status.
-
-        **Only relevant for ``signatureType=3`` (Polymarket Deposit Wallet).**
-        EOA / Proxy / Gnosis Safe wallets do not require this check and the
-        endpoint will return ``auditsStatus=0`` for them — that is NOT a
-        blocker for trading.
-
-        For Deposit Wallets, the backend looks up
-        ``mk_ai_agent.audits_status`` for the agent bound to the given
-        wallet address:
-
-        * ``0`` — not authorized (agent must perform 12 approvals locally)
-        * ``1`` — fully authorized (ready to trade)
-
-        Args:
-            wallet_address: The Polygon wallet address to check.
-
-        Returns:
-            Dict with ``walletAddress``, ``auditsStatus`` (0 or 1), and
-            ``auditsStatusText`` ('未授权' or '已授权').
-        """
-        return self._request(
-            "GET",
-            "/wallet/audit-status",
-            params={"walletAddress": wallet_address},
-        )
-
-    def get_wallet_audit_items(self) -> Dict[str, Any]:
-        """
-        Retrieve the 12 on-chain approval items required by a Polymarket
-        Deposit Wallet (``signatureType=3``) before trading.
-
-        **Only Deposit Wallets need to perform these approvals.** EOA /
-        Proxy / Gnosis Safe wallets manage their own approvals and should
-        ignore this list.
-
-        Each item describes:
-        * ``audit_name`` — human-readable label (e.g. 'pUSD → CTF Exchange (V2)')
-        * ``audit_item_code`` — short code identifier
-        * ``token_contract`` — ERC-20 or ERC-1155 contract address
-        * ``spender_contract`` — the operator / spender to approve
-        * ``method`` — ``'approve'`` (ERC-20) or ``'setApprovalForAll'`` (ERC-1155)
-        * ``check_method`` — ``'allowance'`` or ``'isApprovedForAll'``
-
-        Returns:
-            Dict with ``total`` (always 12) and ``items`` (list of audit
-            item objects).
-        """
-        return self._request("GET", "/wallet/audit-items")
-
     # ============================================================
     # Trading Operations
     # ============================================================
@@ -1179,10 +1117,7 @@ class AionMarketClient:
     def trade(
         self,
         payload: Dict[str, Any],
-        auto_charge_fee: bool = False,
-        fee_rate: float = 0.01,
-        eoa_private_key: Optional[str] = None,
-        auto_approve_eoa_fee: bool = False,
+        **_legacy_kwargs: Any,
     ) -> Dict[str, Any]:
         """
         Execute a market trade order on Polymarket.
@@ -1209,44 +1144,15 @@ class AionMarketClient:
         may still be present in the outgoing HTTP payload but are
         ignored by both the SDK and the backend.
 
-        Automatic fee charging (DISABLED for Polymarket):
-            **Polymarket platform fee charging has been removed.** Both
-            BUY and SELL orders no longer trigger any platform fee
-            transfer — neither ``/aiagent/charge-fee/polymarket/*`` nor
-            ``/order/chargeDepositWalletFee`` is called from this
-            method, regardless of the ``auto_charge_fee`` value. The
-            ``auto_charge_fee`` and ``auto_approve_eoa_fee`` parameters
-            are kept only for backward-compatibility with existing
-            callers; they have no effect. The response always carries
-            ``feeCharge = {"status": "disabled", "reason": "Polymarket
-            fee charging removed"}``. Kalshi fee charging
-            (``charge_kalshi_fee`` / ``kalshi_submit(auto_charge_fee=True)``)
-            is unaffected.
-
-        EOA fee pre-approval (DISABLED):
-            Because Polymarket fee charging is removed, the SDK no
-            longer broadcasts the one-time ``pUSD.approve`` to the
-            platform Fireblocks Vault. ``eoa_private_key`` and
-            ``auto_approve_eoa_fee`` are kept for backward compatibility
-            but are ignored by this method.
-
         Args:
             payload: trade order payload.
-            auto_charge_fee: Deprecated / ignored. Polymarket fee
-                charging has been removed; pass any value (default
-                ``False``).
-            fee_rate: Deprecated / ignored. Kept only so existing
-                callers do not break.
-            eoa_private_key: Deprecated / ignored.
-            auto_approve_eoa_fee: Deprecated / ignored.
 
         Returns:
-            Trade execution result with order ID and status. The
-            response always carries
-            ``feeCharge = {"status": "disabled", "reason": "Polymarket
-            fee charging removed"}`` so downstream callers can detect
-            the new behaviour.
+            Trade execution result with order ID and status.
         """
+        # Legacy keyword arguments from older SDK versions are accepted
+        # for backward compatibility but are not used.
+        _ = _legacy_kwargs
         required_top_fields = [
             "marketConditionId",
             "marketQuestion",
@@ -1307,29 +1213,9 @@ class AionMarketClient:
         if eoa_in_order and not normalized_payload.get("polyAddress"):
             normalized_payload["polyAddress"] = eoa_in_order
 
-        # NOTE: Polymarket platform fee charging has been removed.
-        # The SDK no longer computes ``feeAmount``, no longer broadcasts
-        # the EOA pUSD.approve, and no longer calls any
-        # ``/aiagent/charge-fee/polymarket/*`` or
-        # ``/order/chargeDepositWalletFee`` endpoint. The
-        # ``auto_charge_fee`` / ``auto_approve_eoa_fee`` /
-        # ``eoa_private_key`` / ``fee_rate`` parameters are accepted
-        # only for backward compatibility and are intentionally unused
-        # below. Kalshi fee charging is unaffected — see
-        # :meth:`kalshi_submit` and :meth:`charge_kalshi_fee`.
-        _ = (auto_charge_fee, auto_approve_eoa_fee, eoa_private_key, fee_rate)
-
-        # Polymarket fee charging is permanently disabled — submit the
-        # order and return immediately with a sentinel feeCharge so
-        # callers can detect the new behaviour.
-        response = self._request(
+        return self._request(
             "POST", "/markets/trade", json=normalized_payload
         )
-        response["feeCharge"] = {
-            "status": "disabled",
-            "reason": "Polymarket fee charging removed",
-        }
-        return response
 
     def batch_trade(self, orders: list) -> Dict[str, Any]:
         """
@@ -1824,103 +1710,6 @@ class AionMarketClient:
     # ============================================================
     # Fee Charging Operations
     # ============================================================
-
-    def charge_polymarket_fee(
-        self,
-        amount: str,
-        safe_address: str,
-    ) -> Dict[str, Any]:
-        """
-        DISABLED — Polymarket platform fee charging has been removed.
-
-        Calling this method raises :class:`NotImplementedError`. Both
-        BUY and SELL orders on Polymarket no longer trigger any
-        platform fee transfer. Kalshi fees are unaffected and should
-        continue to use :meth:`charge_kalshi_fee`.
-        """
-        raise NotImplementedError(
-            "Polymarket fee charging has been removed. "
-            "This SDK no longer calls /aiagent/charge-fee/polymarket/trade-fee. "
-            "Use client.charge_kalshi_fee(...) for Kalshi orders."
-        )
-
-    def charge_polymarket_deposit_wallet_fee(
-        self,
-        amount: str,
-        deposit_wallet_address: str,
-    ) -> Dict[str, Any]:
-        """
-        DISABLED — Polymarket platform fee charging has been removed.
-
-        Calling this method raises :class:`NotImplementedError`. The
-        ``/order/chargeDepositWalletFee`` endpoint is no longer invoked
-        from the SDK. Kalshi fees are unaffected.
-        """
-        raise NotImplementedError(
-            "Polymarket Deposit Wallet fee charging has been removed. "
-            "This SDK no longer calls /order/chargeDepositWalletFee."
-        )
-
-    def charge_polymarket_eoa_fee(
-        self,
-        amount: str,
-        eoa_address: str,
-    ) -> Dict[str, Any]:
-        """
-        DISABLED — Polymarket platform fee charging has been removed.
-
-        Calling this method raises :class:`NotImplementedError`. The
-        ``/aiagent/charge-fee/polymarket/eoa-trade-fee`` endpoint is no
-        longer invoked from the SDK and the EOA no longer needs to
-        ``pUSD.approve`` the Fireblocks Vault for trading purposes.
-        Kalshi fees are unaffected.
-        """
-        raise NotImplementedError(
-            "Polymarket EOA fee charging has been removed. "
-            "This SDK no longer calls /aiagent/charge-fee/polymarket/eoa-trade-fee."
-        )
-
-    def get_polymarket_eoa_spender(self) -> Dict[str, Any]:
-        """
-        Return the metadata an EOA wallet needs in order to ``approve``
-        pUSD for platform fee collection.
-
-        Always resolve these values dynamically via this endpoint instead
-        of hard-coding them — the Fireblocks Vault address (``spender``)
-        may rotate, and confusing it with ``platformFeeAddress`` is the
-        single most common reason
-        :meth:`charge_polymarket_eoa_fee` returns ``授权额度不足``.
-
-        Response shape::
-
-            {
-              "spender":            "0x...",  # platform Fireblocks Vault — USE THIS as the approve() spender
-              "platformFeeAddress": "0x...",  # final fee receiver — informational only, do NOT approve to this
-              "tokenAddress":       "0x...",  # pUSD ERC-20 contract on Polygon
-              "decimals":           6,
-              "chainId":            137
-            }
-
-        Typical use::
-
-            from aion_sdk import approve_pusd_for_fireblocks
-
-            spender_info = client.get_polymarket_eoa_spender()
-            approve_pusd_for_fireblocks(
-                private_key=EOA_PRIVATE_KEY,
-                spender=spender_info["spender"],            # MUST be the Vault, not platformFeeAddress
-                token_address=spender_info["tokenAddress"], # pUSD
-                amount=1_000 * 10**6,                       # 1000 pUSD; covers ~100k USD of trading volume
-            )
-
-        After approving, :meth:`charge_polymarket_eoa_fee` (and the
-        auto-charge inside :meth:`trade`) can pull fees via
-        ``pUSD.transferFrom`` from the EOA to ``platformFeeAddress``.
-        """
-        return self._request(
-            "GET",
-            "/aiagent/charge-fee/polymarket/spender",
-        )
 
     def charge_kalshi_fee(
         self,

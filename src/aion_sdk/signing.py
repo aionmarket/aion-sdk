@@ -198,7 +198,7 @@ def _build_poly_1271_signature(
     uint256 chainId, address verifyingContract, bytes32 salt)``
 
     The ``verifyingContract`` for the nested wallet domain is the deposit
-    wallet address (= ``signer`` in the order).
+    wallet address (= ``signer`` = ``maker`` in the order).
     """
     Account, _ = _require_eth_account()
     abi_encode, keccak = _require_erc7739_deps()
@@ -513,6 +513,11 @@ def build_v2_signed_order(
     if signer is None:
         if sig_type_int == 3:
             # POLY_1271: signer = maker = deposit wallet address.
+            # The EOA signs the payload via private_key, but the order
+            # struct's signer field is the deposit wallet contract
+            # (matching py-clob-client-v2 behavior). The CLOB uses
+            # POLY_ADDRESS header (= EOA) for API key lookup, NOT
+            # order.signer.
             signer_addr = maker_addr
         elif sig_type_int != 0:
             raise ValueError(
@@ -632,6 +637,12 @@ def build_v2_signed_order(
         "builder": builder_hex,
         "expiration": str(expiration_int),
         "signature": signature_hex,
+        # Convenience field: the EOA that signed this order.
+        # For sigType 3 (Deposit Wallet), callers MUST pass this as
+        # ``polyAddress`` in the trade payload so the backend can set
+        # the ``POLY_ADDRESS`` header to the EOA (not the deposit
+        # wallet contract).
+        "eoaAddress": pk_eoa,
     }
 
 

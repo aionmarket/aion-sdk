@@ -14,7 +14,7 @@ Python SDK for AI Agent trading operations on Polymarket and Kalshi prediction m
 
 ## Installation
 
-### From PyPI (recommended)
+### From PyPI (recommended)完成
 
 ```bash
 pip install aion-sdk

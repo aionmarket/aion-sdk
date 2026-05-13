@@ -11,6 +11,8 @@ from dataclasses import dataclass
 from typing import Any, Dict, Optional
 from urllib import error, parse, request
 
+from ._polymarket_deposit import derive_polymarket_deposit_wallet
+
 # Production base URL — never changes between releases.
 # Override via AIONMARKET_BASE_URL env var or explicit base_url parameter.
 _PRODUCTION_URL = "https://api.aionmarket.com/bvapi"
@@ -123,9 +125,13 @@ class AionMarketClient:
         * If the user has a Polymarket account, the response contains
           ``proxyWallet`` — the address Polymarket itself treats as the
           trading wallet for that EOA (deposit wallet or legacy proxy).
-        * If there is no Polymarket account yet, the response is
-          ``null`` and the agent should treat the bare EOA as the
-          trading wallet (``signatureType=0``).
+        * If there is no Polymarket account yet (HTTP 404 or empty
+          body), the agent locally derives the counterfactual POLY_1271
+          Deposit Wallet via CREATE2 — matching the front-end's
+          ``deriveDepositWalletAddress(eoa)`` behaviour — and signs as
+          ``signatureType=3``. The wallet address is deterministic from
+          the EOA, so funds can be deposited before the relayer
+          actually deploys the proxy on-chain.
 
         This helper does NOT do any signing — it just answers the
         question "what address should I register with
@@ -144,9 +150,10 @@ class AionMarketClient:
                 {
                     "eoa":          "0x...",        # always echoed back
                     "tradingWallet":"0x...",        # use this as maker / register this
-                    "isDepositWallet": True/False,  # True when a proxyWallet exists
+                    "isDepositWallet": True/False,  # True when using a Deposit Wallet (returned or derived)
                     "signatureType": 0 | 3,         # 0 = bare EOA, 3 = POLY_1271 deposit wallet
                     "profile":     {...} | None,    # raw Polymarket profile body
+                    "autoDerived": True/False,      # True when tradingWallet was derived locally (no on-chain proxy yet)
                 }
 
             ``signatureType`` is the value the agent should pass to
@@ -199,14 +206,20 @@ class AionMarketClient:
             with request.urlopen(req, timeout=timeout) as resp:
                 body = resp.read().decode("utf-8")
         except error.HTTPError as exc:
-            # 404 = no Polymarket profile for this EOA → trade from bare EOA
+            # 404 = no Polymarket profile for this EOA. Match the
+            # front-end: locally derive the counterfactual POLY_1271
+            # Deposit Wallet and sign as signatureType=3. The address
+            # is deterministic from the EOA; the proxy is deployed
+            # on-chain by Polymarket's relayer on first interaction.
             if exc.code == 404:
+                derived = derive_polymarket_deposit_wallet(eoa)
                 return {
                     "eoa": eoa,
-                    "tradingWallet": eoa,
-                    "isDepositWallet": False,
-                    "signatureType": 0,
+                    "tradingWallet": derived,
+                    "isDepositWallet": True,
+                    "signatureType": 3,
                     "profile": None,
+                    "autoDerived": True,
                 }
             raise ApiError(
                 message=f"Polymarket profile API HTTP {exc.code}",
@@ -232,13 +245,15 @@ class AionMarketClient:
             profile = None
 
         if not isinstance(profile, dict):
-            # No Polymarket account → trade from bare EOA
+            # Empty/null body → treat as new user, derive locally.
+            derived = derive_polymarket_deposit_wallet(eoa)
             return {
                 "eoa": eoa,
-                "tradingWallet": eoa,
-                "isDepositWallet": False,
-                "signatureType": 0,
+                "tradingWallet": derived,
+                "isDepositWallet": True,
+                "signatureType": 3,
                 "profile": None,
+                "autoDerived": True,
             }
 
         proxy_wallet = profile.get("proxyWallet")
@@ -249,14 +264,19 @@ class AionMarketClient:
                 "isDepositWallet": True,
                 "signatureType": 3,
                 "profile": profile,
+                "autoDerived": False,
             }
 
+        # Profile exists but has no proxyWallet → new-style account that
+        # has not yet been bootstrapped. Derive the deposit wallet.
+        derived = derive_polymarket_deposit_wallet(eoa)
         return {
             "eoa": eoa,
-            "tradingWallet": eoa,
-            "isDepositWallet": False,
-            "signatureType": 0,
+            "tradingWallet": derived,
+            "isDepositWallet": True,
+            "signatureType": 3,
             "profile": profile,
+            "autoDerived": True,
         }
 
     def _headers(self) -> Dict[str, str]:

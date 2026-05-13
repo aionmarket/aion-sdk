@@ -2,6 +2,7 @@ LICENSE
 README.md
 pyproject.toml
 src/aion_sdk/__init__.py
+src/aion_sdk/_polymarket_deposit.py
 src/aion_sdk/client.py
 src/aion_sdk/signing.py
 src/aion_sdk.egg-info/PKG-INFO

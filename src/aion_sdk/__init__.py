@@ -5,6 +5,7 @@ This module provides a simple interface for interacting with the AION Market AI 
 """
 
 from .client import AionMarketClient, ApiError
+from ._polymarket_deposit import derive_polymarket_deposit_wallet  # noqa: F401
 
 # Polymarket V2 signing helpers live in an optional submodule so that the
 # core SDK keeps zero runtime dependencies. Users who need V2 signing
@@ -18,7 +19,7 @@ try:  # pragma: no cover - exercised only when eth-account is installed
 except ImportError:  # pragma: no cover
     build_v2_signed_order = None  # type: ignore[assignment]
 
-__version__ = "0.14.1"
+__version__ = "0.15.1"
 __author__ = "AION Market"
 __all__ = [
     "AionMarketClient",

@@ -180,6 +180,9 @@ info = AionMarketClient.resolve_polymarket_wallet(eoa)
 
 trading_wallet = info["tradingWallet"]     # use as order.maker + order.signer
 signature_type = info["signatureType"]     # 3 = deposit wallet, 0 = bare EOA
+# info["autoDerived"] is True when the EOA has no Polymarket profile yet
+# and the SDK locally derived the counterfactual Deposit Wallet via
+# CREATE2 — no manual polymarket.com signup needed.
 
 print(f"EOA:            {eoa}")
 print(f"Trading wallet: {trading_wallet} (deposit={info['isDepositWallet']})")

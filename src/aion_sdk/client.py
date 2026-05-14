@@ -267,16 +267,20 @@ class AionMarketClient:
                 "autoDerived": False,
             }
 
-        # Profile exists but has no proxyWallet → new-style account that
-        # has not yet been bootstrapped. Derive the deposit wallet.
-        derived = derive_polymarket_deposit_wallet(eoa)
+        # Profile exists but has no proxyWallet → existing Polymarket
+        # account that trades directly from its EOA (legacy API-only
+        # users that never went through the deposit-wallet onboarding).
+        # USDC balance and CLOB credentials are bound to the EOA
+        # itself; do NOT auto-derive a Deposit Wallet here — that would
+        # point trading at an empty counterfactual address and every
+        # order would fail. Return the bare EOA with signatureType=0.
         return {
             "eoa": eoa,
-            "tradingWallet": derived,
-            "isDepositWallet": True,
-            "signatureType": 3,
+            "tradingWallet": eoa,
+            "isDepositWallet": False,
+            "signatureType": 0,
             "profile": profile,
-            "autoDerived": True,
+            "autoDerived": False,
         }
 
     def _headers(self) -> Dict[str, str]:
@@ -1043,6 +1047,89 @@ class AionMarketClient:
         return self._request(
             "POST",
             "/wallet/credentials",
+            json=payload,
+        )
+
+    def deploy_polymarket_deposit_wallet(
+        self,
+        eoa_address: str,
+        expected_deposit_wallet: Optional[str] = None,
+    ) -> Dict[str, Any]:
+        """
+        Deploy the Polymarket Deposit Wallet for an EOA via the backend.
+
+        Required when :meth:`resolve_polymarket_wallet` reports
+        ``autoDerived=True`` (i.e. Polymarket's profile API returned 404
+        for this EOA). The locally CREATE2-derived Deposit Wallet address
+        is mathematically valid but **not yet known to Polymarket's
+        backend**, so any order signed against it is rejected.
+
+        This call asks the AION Market backend to invoke Polymarket's
+        ``builder-relayer`` (https://relayer-v2.polymarket.com/submit) with
+        a ``WALLET-CREATE`` payload, authenticated by the platform's
+        builder HMAC credentials. The relayer:
+
+        1. Verifies the builder HMAC headers
+        2. Pays gas and deploys the ERC-1967 minimal proxy at the
+           deterministic CREATE2 address
+        3. Registers the new deposit wallet in Polymarket's database
+
+        **No user signature is required** — only the EOA address. The
+        agent's private key never leaves the local machine.
+
+        Must be called **before** ``register_wallet_credentials(...)``
+        for any account where ``resolve_polymarket_wallet`` reports
+        ``autoDerived=True``.
+
+        Args:
+            eoa_address: The EOA derived from the user's private key
+                (``Account.from_key(private_key).address``).
+            expected_deposit_wallet: Optional. The Deposit Wallet
+                address the SDK locally derived via CREATE2. When
+                provided, the backend will short-circuit if the address
+                is already deployed on-chain.
+
+        Returns:
+            ``{
+                "deployed":            True/False,
+                "alreadyDeployed":     True/False,
+                "depositWalletAddress":"0x...",
+                "eoaAddress":          "0x...",
+                "transactionId":       "...",       # only when newly deployed
+                "transactionHash":     "0x...",     # only when mined
+                "state":               "STATE_MINED" | "STATE_CONFIRMED" | ...,
+            }``
+
+        Raises:
+            ApiError: If the backend or relayer reports a failure.
+
+        Example::
+
+            eoa  = Account.from_key(private_key).address
+            info = AionMarketClient.resolve_polymarket_wallet(eoa)
+
+            if info.get("autoDerived"):
+                # New Polymarket user — need to deploy Deposit Wallet first.
+                client.deploy_polymarket_deposit_wallet(
+                    eoa_address=eoa,
+                    expected_deposit_wallet=info["tradingWallet"],
+                )
+
+            client.register_wallet_credentials(
+                wallet_address=info["tradingWallet"],
+                api_key=creds.api_key,
+                api_secret=creds.api_secret,
+                api_passphrase=creds.api_passphrase,
+                signature_type=info["signatureType"],
+            )
+        """
+        payload: Dict[str, Any] = {"eoaAddress": eoa_address}
+        if expected_deposit_wallet:
+            payload["expectedDepositWallet"] = expected_deposit_wallet
+
+        return self._request(
+            "POST",
+            "/wallet/polymarket/deploy-deposit-wallet",
             json=payload,
         )
 

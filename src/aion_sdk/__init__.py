@@ -19,7 +19,7 @@ try:  # pragma: no cover - exercised only when eth-account is installed
 except ImportError:  # pragma: no cover
     build_v2_signed_order = None  # type: ignore[assignment]
 
-__version__ = "0.15.1"
+__version__ = "0.16.0"
 __author__ = "AION Market"
 __all__ = [
     "AionMarketClient",
